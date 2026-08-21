@@ -1,0 +1,199 @@
+@import "tailwindcss";
+
+:root {
+  --card-width: 52px;
+  --card-height: 76px;
+  --table-green: #1a5c2e;
+  --table-felt: #2d7a45;
+  --gold: #d4a847;
+  --card-shadow: 0 2px 8px rgba(0,0,0,0.3);
+}
+
+* {
+  -webkit-tap-highlight-color: transparent;
+  touch-action: manipulation;
+}
+
+html, body {
+  overscroll-behavior: none;
+  overflow: hidden;
+  height: 100%;
+  width: 100%;
+}
+
+@keyframes dealCard {
+  from { transform: translate(-50%, -50%) scale(0.5) rotate(180deg); opacity: 0; }
+  to { transform: translate(0, 0) scale(1) rotate(0deg); opacity: 1; }
+}
+
+@keyframes slideIn {
+  from { transform: translateY(100px); opacity: 0; }
+  to { transform: translateY(0); opacity: 1; }
+}
+
+@keyframes pulse {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.05); }
+}
+
+@keyframes glow {
+  0%, 100% { box-shadow: 0 0 5px rgba(212, 168, 71, 0.5); }
+  50% { box-shadow: 0 0 20px rgba(212, 168, 71, 0.9); }
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(-10px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.card-deal {
+  animation: dealCard 0.4s ease-out forwards;
+}
+
+.card-slide {
+  animation: slideIn 0.3s ease-out forwards;
+}
+
+.card-pulse {
+  animation: pulse 1.5s ease-in-out infinite;
+}
+
+.card-glow {
+  animation: glow 2s ease-in-out infinite;
+}
+
+.fade-in {
+  animation: fadeIn 0.3s ease-out forwards;
+}
+
+.card {
+  width: var(--card-width);
+  height: var(--card-height);
+  border-radius: 6px;
+  border: 1.5px solid #ddd;
+  background: white;
+  box-shadow: var(--card-shadow);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  font-weight: 700;
+  font-size: 14px;
+  cursor: pointer;
+  transition: transform 0.15s, box-shadow 0.15s, border-color 0.15s;
+  user-select: none;
+  position: relative;
+  flex-shrink: 0;
+}
+
+.card:active {
+  transform: scale(0.95);
+}
+
+.card.selected {
+  border-color: var(--gold);
+  box-shadow: 0 0 12px rgba(212, 168, 71, 0.8);
+  transform: translateY(-8px);
+}
+
+.card.red { color: #dc2626; }
+.card.black { color: #1e293b; }
+
+.card-back {
+  background: linear-gradient(135deg, #1e3a5f, #2d5a8e);
+  border-color: #1e3a5f;
+  color: white;
+}
+
+.card-back::after {
+  content: '🂠';
+  font-size: 28px;
+}
+
+.joker-card {
+  background: linear-gradient(135deg, #fbbf24, #f59e0b);
+  border-color: #d97706;
+  color: #7c2d12;
+}
+
+.table-surface {
+  background: radial-gradient(ellipse at center, var(--table-felt) 0%, var(--table-green) 100%);
+  border: 3px solid #8B4513;
+  box-shadow: inset 0 0 50px rgba(0,0,0,0.3);
+}
+
+.btn-primary {
+  background: linear-gradient(135deg, #d4a847, #b8922e);
+  color: white;
+  font-weight: 700;
+  padding: 10px 20px;
+  border-radius: 8px;
+  border: none;
+  cursor: pointer;
+  transition: all 0.2s;
+  text-shadow: 0 1px 2px rgba(0,0,0,0.3);
+}
+
+.btn-primary:active {
+  transform: scale(0.95);
+}
+
+.btn-secondary {
+  background: linear-gradient(135deg, #475569, #334155);
+  color: white;
+  font-weight: 600;
+  padding: 8px 16px;
+  border-radius: 8px;
+  border: none;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.btn-danger {
+  background: linear-gradient(135deg, #dc2626, #b91c1c);
+  color: white;
+  font-weight: 600;
+  padding: 8px 16px;
+  border-radius: 8px;
+  border: none;
+  cursor: pointer;
+}
+
+.score-table {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 12px;
+}
+
+.score-table th, .score-table td {
+  border: 1px solid #475569;
+  padding: 4px 8px;
+  text-align: center;
+}
+
+.score-table th {
+  background: #334155;
+  color: white;
+}
+
+.hand-scroll {
+  display: flex;
+  gap: 4px;
+  overflow-x: auto;
+  padding: 8px 4px;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+.hand-scroll::-webkit-scrollbar {
+  display: none;
+}
+
+.combo-group {
+  display: flex;
+  gap: 2px;
+  padding: 4px;
+  border: 1px solid rgba(255,255,255,0.2);
+  border-radius: 8px;
+  background: rgba(0,0,0,0.15);
+}
