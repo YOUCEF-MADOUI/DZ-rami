@@ -194,7 +194,7 @@ export function chopCard(state: GameState): GameState {
   const prevPlayerIndex = getPreviousPlayerIndex(state.currentPlayerIndex, state.config.playerCount);
   const malus = currentPlayer.status === 'not_opened'
     ? state.config.malusChopOuverture
-    : state.config.malusChopJoueurOuvert;
+    : (state.config.malusChopJoueurOuvertActif ? state.config.malusChopJoueurOuvert : 0);
 
   const faults: Fault[] = malus > 0 ? [{
     playerId: state.players[prevPlayerIndex].id,
@@ -231,7 +231,7 @@ export function rejectChop(state: GameState): GameState {
 
   const updatedPlayers = state.players.map(p =>
     p.id === currentPlayer.id
-      ? { ...p, hand: p.hand.filter(c => c.id !== card.id) }
+      ? { ...p, hand: p.hand.filter(c => c.id !== card.id), hasChoppedThisRound: false }
       : p
   );
 
@@ -460,6 +460,30 @@ export function discard(state: GameState, cardId: string, faceDown: boolean = fa
   const currentPlayer = state.players[state.currentPlayerIndex];
   const card = currentPlayer.hand.find(c => c.id === cardId);
   if (!card) return state;
+
+  // CHOP-FOR-OPENING RULE (enforced): when "CHOP uniquement pour ouverture" is
+  // enabled, a player who chopped this turn and is still not opened MUST open
+  // this very turn. Refuse the discard unless they laid a valid opening pose
+  // (or they cancel the chop via rejectChop).
+  if (
+    state.config.chopSeulementOuverture &&
+    state.turnState.drawSource === 'chop' &&
+    currentPlayer.status === 'not_opened'
+  ) {
+    const ownPlaced = state.tableCombinations.filter(c => c.ownerId === currentPlayer.id);
+    const hasJokerInHand = currentPlayer.hand.some(c => c.isJoker && c.id !== cardId);
+    const pose = validateFirstPose(
+      ownPlaced,
+      state.suite,
+      state.initialThreshold,
+      hasJokerInHand,
+      state.config
+    );
+    if (!pose.valid) {
+      // Refuse: the player must open (place a valid pose) or cancel the chop.
+      return state;
+    }
+  }
 
   // OPENING RULE (enforced): if a not-opened player has laid combinations this
   // turn but the pose does NOT reach the SUITE in VIERGE, the opening is illegal.

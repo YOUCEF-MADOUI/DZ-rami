@@ -147,6 +147,8 @@ export interface GameConfig {
   chopObligatoire: boolean;
   malusChopOuverture: number;       // Default: +50
   malusChopJoueurOuvert: number;    // Default: +10
+  malusChopJoueurOuvertActif: boolean; // If false, no malus when an already-opened player chops
+  chopSeulementOuverture: boolean;  // If true, a non-opened player who chops MUST open this turn (or cancel)
   carreResponsable: 'detenteur' | 'completeur';  // Who handles completed carré
   tierceObligatoire: boolean;       // If true, opening must include at least one tierce
   faultePenalty: number;            // Default: +100
@@ -166,6 +168,8 @@ export const DEFAULT_CONFIG: GameConfig = {
   chopObligatoire: false,
   malusChopOuverture: 50,
   malusChopJoueurOuvert: 10,
+  malusChopJoueurOuvertActif: true,
+  chopSeulementOuverture: false,
   carreResponsable: 'completeur',
   tierceObligatoire: false,
   faultePenalty: 100,

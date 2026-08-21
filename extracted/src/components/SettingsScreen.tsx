@@ -119,13 +119,30 @@ export default function SettingsScreen({ config, onSave, onBack }: Props) {
               min={0}
               max={200}
             />
-            <NumberSetting
+            <ToggleSetting
               label="Malus CHOP joueur ouvert"
-              value={localConfig.malusChopJoueurOuvert}
-              field="malusChopJoueurOuvert"
-              min={0}
-              max={100}
+              value={localConfig.malusChopJoueurOuvertActif}
+              field="malusChopJoueurOuvertActif"
             />
+            {localConfig.malusChopJoueurOuvertActif && (
+              <NumberSetting
+                label="↳ Valeur du malus"
+                value={localConfig.malusChopJoueurOuvert}
+                field="malusChopJoueurOuvert"
+                min={0}
+                max={100}
+              />
+            )}
+            <ToggleSetting
+              label="CHOP uniquement pour ouverture"
+              value={localConfig.chopSeulementOuverture}
+              field="chopSeulementOuverture"
+            />
+            <p className="text-[11px] text-slate-500 pb-3 pt-1">
+              Si activé, un joueur non ouvert qui chope doit obligatoirement ouvrir ce
+              tour-ci : il ne peut pas défausser sans avoir ouvert, ou doit annuler pour
+              rendre la carte chopée.
+            </p>
           </div>
         </div>
 
