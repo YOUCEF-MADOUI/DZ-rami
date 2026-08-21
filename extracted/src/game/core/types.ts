@@ -139,6 +139,7 @@ export type FaultType =
   | 'bad_joker_recovery'
   | 'playable_discard'
   | 'carre_not_recovered'
+  | 'opened_without_tierce'
   | 'other_violation';
 
 export interface GameConfig {
@@ -147,6 +148,7 @@ export interface GameConfig {
   malusChopOuverture: number;       // Default: +50
   malusChopJoueurOuvert: number;    // Default: +10
   carreResponsable: 'detenteur' | 'completeur';  // Who handles completed carré
+  tierceObligatoire: boolean;       // If true, opening must include at least one tierce
   faultePenalty: number;            // Default: +100
   faulteJokerPenalty: number;       // Default: +200
   maxCycles: number;                // Default: 3
@@ -165,6 +167,7 @@ export const DEFAULT_CONFIG: GameConfig = {
   malusChopOuverture: 50,
   malusChopJoueurOuvert: 10,
   carreResponsable: 'completeur',
+  tierceObligatoire: false,
   faultePenalty: 100,
   faulteJokerPenalty: 200,
   maxCycles: 3,

@@ -390,71 +390,99 @@ function chooseDiscard(state: GameState, player: Player): AIDecision {
   };
 }
 
-export function executeAITurn(state: GameState): GameState {
-  let currentState = state;
-  const decisions = makeAIDecision(currentState);
+// Guarantees the AI ends its turn: performs a discard that changes the state
+// (i.e. actually advances to the next player). Falls back safely so the game
+// can never get stuck on an AI turn — including when an attempted opening below
+// the SUITE is rejected by the engine.
+function aiDiscardAndAdvance(state: GameState, meIndex: number): GameState {
+  const tryDiscard = (s: GameState): GameState | null => {
+    const me = s.players[meIndex];
+    if (me.hand.length === 0) return null;
+    const choice = chooseDiscard(s, me);
+    const cardId = choice.cardId || me.hand[me.hand.length - 1].id;
+    const next = discard(s, cardId, choice.faceDown ?? true);
+    // A successful discard advances currentPlayerIndex or ends the round.
+    if (next.currentPlayerIndex !== s.currentPlayerIndex || next.phase !== 'playing') return next;
+    return null;
+  };
 
-  for (const decision of decisions) {
-    switch (decision.action) {
-      case 'draw':
-        currentState = drawCard(currentState);
-        break;
-      case 'chop':
-        currentState = chopCard(currentState);
-        break;
-      case 'place':
-        if (decision.cardIds && decision.combinationType) {
-          currentState = placeCombination(currentState, decision.cardIds, decision.combinationType);
-        }
-        break;
-      case 'add':
-        if (decision.cardId && decision.combinationId) {
-          currentState = addToCombination(currentState, decision.cardId, decision.combinationId);
-        }
-        break;
-      case 'recover_joker':
-        if (decision.cardId && decision.combinationId) {
-          currentState = recoverJoker(currentState, decision.combinationId, decision.cardId);
-        }
-        break;
-      case 'discard':
-        if (decision.cardId) {
-          currentState = discard(currentState, decision.cardId, decision.faceDown ?? true);
-        }
-        break;
-    }
+  // 1) Try the normal discard.
+  let result = tryDiscard(state);
+  if (result) return result;
 
-    // Re-evaluate after draw/chop
-    if (decision.action === 'draw' || decision.action === 'chop') {
-      const playDecisions = planPlay(currentState, currentState.players[currentState.currentPlayerIndex]);
-      const discardDecision = chooseDiscard(currentState, currentState.players[currentState.currentPlayerIndex]);
-      
-      for (const pd of playDecisions) {
-        switch (pd.action) {
-          case 'place':
-            if (pd.cardIds && pd.combinationType) {
-              currentState = placeCombination(currentState, pd.cardIds, pd.combinationType);
-            }
-            break;
-          case 'add':
-            if (pd.cardId && pd.combinationId) {
-              currentState = addToCombination(currentState, pd.cardId, pd.combinationId);
-            }
-            break;
-          case 'recover_joker':
-            if (pd.cardId && pd.combinationId) {
-              currentState = recoverJoker(currentState, pd.combinationId, pd.cardId);
-            }
-            break;
-        }
-      }
-
-      if (discardDecision.cardId) {
-        currentState = discard(currentState, discardDecision.cardId, discardDecision.faceDown ?? true);
-      }
-      break; // Exit after full turn
+  // 2) The discard was rejected (most likely an illegal opening below SUITE).
+  //    Take back this AI's just-placed combinations into its hand and retry.
+  const me = state.players[meIndex];
+  if (me.status === 'not_opened') {
+    const ownCombos = state.tableCombinations.filter(c => c.ownerId === me.id);
+    if (ownCombos.length > 0) {
+      const returnedCards = ownCombos.flatMap(c => c.cards);
+      const rebuilt: GameState = {
+        ...state,
+        tableCombinations: state.tableCombinations.filter(c => c.ownerId !== me.id),
+        players: state.players.map((p, i) =>
+          i === meIndex ? { ...p, hand: [...p.hand, ...returnedCards] } : p
+        ),
+      };
+      result = tryDiscard(rebuilt);
+      if (result) return result;
     }
   }
 
-  return currentState;
+  // 3) Last-resort safety: discard any remaining card so the turn always ends.
+  const cur = state.players[meIndex];
+  if (cur.hand.length > 0) {
+    const forced = discard(state, cur.hand[0].id, !cur.hand[0].isJoker);
+    if (forced.currentPlayerIndex !== state.currentPlayerIndex || forced.phase !== 'playing') return forced;
+  }
+  return state;
+}
+
+export function executeAITurn(state: GameState): GameState {
+  if (!state.turnState) return state;
+  let currentState = state;
+  const meIndex = currentState.currentPlayerIndex;
+
+  // ── Phase 1: draw or chop ──
+  if (currentState.turnState?.phase === 'must_draw') {
+    const me = currentState.players[meIndex];
+    const wantsChop = shouldChop(currentState, me);
+    currentState = wantsChop ? chopCard(currentState) : drawCard(currentState);
+
+    // If drawing/chopping didn't move us into the playing phase (e.g. null round
+    // after reshuffle, or the round ended), stop here — the state already moved on.
+    if (currentState.phase !== 'playing') return currentState;
+    if (currentState.currentPlayerIndex !== meIndex) return currentState;
+    if (currentState.turnState?.phase !== 'playing') {
+      // Could not draw for some reason: force-advance via a safe discard.
+      return aiDiscardAndAdvance(currentState, meIndex);
+    }
+  }
+
+  // ── Phase 2: place / add / recover (always keep ≥1 card for the discard) ──
+  const playDecisions = planPlay(currentState, currentState.players[meIndex]);
+  for (const pd of playDecisions) {
+    const handLen = currentState.players[meIndex].hand.length;
+    switch (pd.action) {
+      case 'place':
+        // Placing must leave at least one card to discard.
+        if (pd.cardIds && pd.combinationType && handLen - pd.cardIds.length >= 1) {
+          currentState = placeCombination(currentState, pd.cardIds, pd.combinationType);
+        }
+        break;
+      case 'add':
+        if (pd.cardId && pd.combinationId && handLen - 1 >= 1) {
+          currentState = addToCombination(currentState, pd.cardId, pd.combinationId);
+        }
+        break;
+      case 'recover_joker':
+        if (pd.cardId && pd.combinationId) {
+          currentState = recoverJoker(currentState, pd.combinationId, pd.cardId);
+        }
+        break;
+    }
+  }
+
+  // ── Phase 3: guaranteed discard that advances the turn ──
+  return aiDiscardAndAdvance(currentState, meIndex);
 }

@@ -8,6 +8,9 @@ interface Props {
   cards: GameCard[];
   selectedCards: string[];
   groups: DetectedGroup[];
+  lockedSetForCard?: (cardId: string) => string[] | null;  // user-locked set a card belongs to
+  onUnlockSet?: (cardId: string) => void;                   // unlock the set containing this card
+  onLockGroup?: (cardIds: string[]) => void;                // lock a detected combo via its chevron
   onSelectCard: (cardId: string) => void;
   onSelectGroup: (cardIds: string[]) => void;
   disabled?: boolean;                    // blocks game actions, NOT drag
@@ -20,25 +23,32 @@ interface Props {
 const CARD_W = 64;
 const GAP = 6;
 export default function PlayerHand({
-  cards, selectedCards, groups, onSelectCard, onSelectGroup, disabled,
+  cards, selectedCards, groups, lockedSetForCard, onUnlockSet, onLockGroup, onSelectCard, onSelectGroup, disabled,
   sortMode, onSortChange, onReorder, onCardDragStart, onCardDragEnd,
 }: Props) {
+  // Locked set (user-frozen) a card belongs to, if any.
+  const lockedSet = useCallback((cardId: string): string[] | null =>
+    lockedSetForCard ? lockedSetForCard(cardId) : null, [lockedSetForCard]);
   const containerRef = useRef<HTMLDivElement>(null);
   const [dragBlock, setDragBlock] = useState<string[] | null>(null);
   const [overIdx, setOverIdx] = useState<number | null>(null);
   const isInternalRef = useRef(false);
-  // ── Resolve what block a card belongs to (group or itself) ──
+  // ── Resolve what block a card belongs to ──
+  // A card inside a user-locked set moves with the whole set; otherwise it's free.
   const blockForIndex = useCallback((index: number): string[] => {
-    const g = findGroupForIndex(groups, index);
-    return g ? g.cardIds : [cards[index]?.id].filter(Boolean) as string[];
-  }, [groups, cards]);
-  // ── Click: select whole group if card is in a group ──
+    const id = cards[index]?.id;
+    if (!id) return [];
+    const set = lockedSet(id);
+    return set ? set : [id];
+  }, [cards, lockedSet]);
+  // ── Click: select the whole locked set if the card is locked, else single card ──
   const handleClick = useCallback((index: number) => {
     if (disabled) return;
-    const g = findGroupForIndex(groups, index);
-    if (g) onSelectGroup(g.cardIds);
-    else onSelectCard(cards[index].id);
-  }, [disabled, groups, cards, onSelectCard, onSelectGroup]);
+    const id = cards[index]?.id;
+    const set = lockedSet(id);
+    if (set) { onSelectGroup(set); return; }
+    onSelectCard(id);
+  }, [disabled, cards, onSelectCard, onSelectGroup, lockedSet]);
   // ── Drag start ──
   const handleDragStart = useCallback((e: React.DragEvent, index: number) => {
     const block = blockForIndex(index);
@@ -111,14 +121,22 @@ export default function PlayerHand({
       </div>
       {/* Cards with group bands */}
       <div ref={containerRef}
-        className="relative flex px-2 pt-2 pb-4 overflow-x-auto"
-        style={{ gap: GAP, minHeight: 122 }}
+        className="relative flex px-2 pt-2 pb-7 overflow-x-auto"
+        style={{ gap: GAP, minHeight: 134 }}
         onTouchMove={handleTouchMove} onTouchEnd={handleTouchEnd}>
         {cards.map((card, index) => {
+          // Auto-detected combo (visual hint only, non-interactive).
           const group = findGroupForIndex(groups, index);
           const isFirstOfGroup = group?.startIndex === index;
           const isLastOfGroup = group?.endIndex === index;
           const color = group ? GROUP_COLORS[group.colorIndex] : null;
+          // User-locked set membership.
+          const set = lockedSet(card.id);
+          const prevSet = index > 0 ? lockedSet(cards[index - 1].id) : null;
+          const nextSet = index < cards.length - 1 ? lockedSet(cards[index + 1].id) : null;
+          const sameSet = (a: string[] | null, b: string[] | null) => !!a && !!b && a === b;
+          const isFirstOfSet = !!set && !sameSet(set, prevSet);
+          const isLastOfSet = !!set && !sameSet(set, nextSet);
           const isDragging = draggingSet.has(card.id);
           const isOver = overIdx === index && !isDragging;
           return (
@@ -129,47 +147,75 @@ export default function PlayerHand({
               onTouchStart={() => handleTouchStart(index)}
               className={`relative flex-shrink-0 transition-transform duration-100 ${isDragging ? 'scale-90 opacity-50' : ''} ${isOver ? 'translate-x-3' : ''}`}
               style={{
-                // Tighten spacing inside a group so it reads as one block
-                marginLeft: group && !isFirstOfGroup ? -GAP + 1 : 0,
-                marginRight: group && !isLastOfGroup ? 0 : 0,
+                // Tighten spacing inside a locked set so it reads as one block.
+                marginLeft: set && !isFirstOfSet ? -GAP + 1 : 0,
+                marginRight: 0,
               }}>
-              {/* Group band (behind + under the cards) */}
-              {group && color && (
+              {/* Auto-detected combo band (guide only) */}
+              {group && color && !set && (
                 <>
-                  {/* Top glow border */}
                   <div className="absolute pointer-events-none"
                     style={{
-                      left: isFirstOfGroup ? -3 : 0,
-                      right: isLastOfGroup ? -3 : 0,
-                      top: -3, bottom: -3,
-                      background: color.glow,
-                      borderTopLeftRadius: isFirstOfGroup ? 10 : 0,
-                      borderBottomLeftRadius: isFirstOfGroup ? 10 : 0,
-                      borderTopRightRadius: isLastOfGroup ? 10 : 0,
-                      borderBottomRightRadius: isLastOfGroup ? 10 : 0,
+                      left: isFirstOfGroup ? -3 : 0, right: isLastOfGroup ? -3 : 0,
+                      bottom: -8, height: 5, background: color.band,
+                      borderTopLeftRadius: isFirstOfGroup ? 3 : 0, borderBottomLeftRadius: isFirstOfGroup ? 3 : 0,
+                      borderTopRightRadius: isLastOfGroup ? 3 : 0, borderBottomRightRadius: isLastOfGroup ? 3 : 0,
                       zIndex: 0,
                     }} />
-                  {/* Solid bottom band */}
-                  <div className="absolute pointer-events-none"
-                    style={{
-                      left: isFirstOfGroup ? -3 : 0,
-                      right: isLastOfGroup ? -3 : 0,
-                      bottom: -8, height: 5,
-                      background: color.band,
-                      borderTopLeftRadius: isFirstOfGroup ? 3 : 0,
-                      borderBottomLeftRadius: isFirstOfGroup ? 3 : 0,
-                      borderTopRightRadius: isLastOfGroup ? 3 : 0,
-                      borderBottomRightRadius: isLastOfGroup ? 3 : 0,
-                      zIndex: 0,
-                    }} />
-                  {/* Type label on the first card */}
                   {isFirstOfGroup && (
                     <div className="absolute pointer-events-none text-[8px] font-black px-1 rounded"
                       style={{ top: -12, left: -2, color: color.band, background: 'rgba(0,0,0,0.6)', zIndex: 3 }}>
                       {group.type === 'tierce' ? 'TIERCE' : group.cardIds.length === 4 ? 'CARRÉ' : 'BRELAN'}
                     </div>
                   )}
+                  {/* Lock chevron under the detected combo — locks the WHOLE combo */}
+                  {isLastOfGroup && group.cardIds.length >= 2 && (
+                    <button
+                      onClick={(e) => { e.stopPropagation(); onLockGroup?.(group.cardIds); }}
+                      onPointerDown={(e) => e.stopPropagation()}
+                      draggable={false}
+                      title="Verrouiller cette combinaison"
+                      className="absolute z-20 flex items-center justify-center rounded-full shadow-md transition-transform active:scale-90 hover:scale-110"
+                      style={{ bottom: -22, right: -6, width: 22, height: 22, background: 'rgba(15,23,42,0.9)', border: `2px solid ${color.band}` }}>
+                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" style={{ color: color.band }}>
+                        <path d="M6 9l6 6 6-6" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" />
+                      </svg>
+                    </button>
+                  )}
                 </>
+              )}
+              {/* User LOCKED SET highlight (amber) */}
+              {set && (
+                <>
+                  <div className="absolute pointer-events-none"
+                    style={{
+                      left: isFirstOfSet ? -3 : 0, right: isLastOfSet ? -3 : 0,
+                      top: -3, bottom: -3, background: 'rgba(245,158,11,0.28)',
+                      borderTopLeftRadius: isFirstOfSet ? 10 : 0, borderBottomLeftRadius: isFirstOfSet ? 10 : 0,
+                      borderTopRightRadius: isLastOfSet ? 10 : 0, borderBottomRightRadius: isLastOfSet ? 10 : 0,
+                      boxShadow: 'inset 0 0 0 2px #f59e0b', zIndex: 0,
+                    }} />
+                  {isFirstOfSet && (
+                    <div className="absolute pointer-events-none text-[8px] font-black px-1 rounded flex items-center gap-0.5"
+                      style={{ top: -12, left: -2, color: '#0f172a', background: '#f59e0b', zIndex: 3 }}>
+                      🔒 VERROUILLÉ
+                    </div>
+                  )}
+                </>
+              )}
+              {/* Unlock chevron under the LAST card of a locked set */}
+              {set && isLastOfSet && (
+                <button
+                  onClick={(e) => { e.stopPropagation(); onUnlockSet?.(card.id); }}
+                  onPointerDown={(e) => e.stopPropagation()}
+                  draggable={false}
+                  title="Déverrouiller ces cartes"
+                  className="absolute z-20 flex items-center justify-center rounded-full shadow-md transition-transform active:scale-90 hover:scale-110"
+                  style={{ bottom: -22, right: -6, width: 22, height: 22, background: '#f59e0b', border: '2px solid #f59e0b' }}>
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" style={{ color: '#0f172a' }}>
+                    <path d="M6 15l6-6 6 6" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" />
+                  </svg>
+                </button>
               )}
               <div style={{ position: 'relative', zIndex: 1 }}>
                 <CardView card={card}

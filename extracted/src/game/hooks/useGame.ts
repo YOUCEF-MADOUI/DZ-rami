@@ -8,8 +8,10 @@ import {
   createInitialGameState, performDrawing, startNewRound,
   drawCard, chopCard, placeCombination, addToCombination,
   recoverJoker, discard, getAvailableActions, canChop,
+  takeBackCombinations, reportFault,
   AvailableActions,
 } from '../core/engine';
+import { FaultType } from '../core/types';
 import { executeAITurn } from '../ai/ai-player';
 
 export interface GameActions {
@@ -20,6 +22,8 @@ export interface GameActions {
   place: (cardIds: string[], type: 'tierce' | 'carre') => void;
   addToCombo: (cardId: string, comboId: string) => void;
   recoverJokerAction: (comboId: string, replacementCardId: string) => void;
+  reportFaultAgainst: (accusedId: string, type: FaultType) => { valid: boolean; message: string };
+  takeBack: () => void;
   discardCard: (cardId: string, faceDown?: boolean) => void;
   selectCard: (cardId: string) => void;
   deselectCard: (cardId: string) => void;
@@ -105,6 +109,20 @@ export function useGame() {
     setSelectedCards([]);
   }, [gameState]);
 
+  const takeBack = useCallback(() => {
+    if (!gameState) return;
+    setGameState(takeBackCombinations(gameState));
+    setSelectedCards([]);
+  }, [gameState]);
+
+  const reportFaultAgainst = useCallback((accusedId: string, type: FaultType) => {
+    if (!gameState) return { valid: false, message: '' };
+    // The human (player 0) is always the accuser.
+    const result = reportFault(gameState, gameState.players[0].id, accusedId, type);
+    setGameState(result.state);
+    return { valid: result.valid, message: result.message };
+  }, [gameState]);
+
   const discardCard = useCallback((cardId: string, faceDown: boolean = true) => {
     if (!gameState) return;
     const state = discard(gameState, cardId, faceDown);
@@ -134,6 +152,8 @@ export function useGame() {
     place,
     addToCombo,
     recoverJokerAction,
+    reportFaultAgainst,
+    takeBack,
     discardCard,
     selectCard,
     deselectCard,

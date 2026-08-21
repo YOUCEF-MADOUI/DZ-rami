@@ -129,6 +129,21 @@ export default function SettingsScreen({ config, onSave, onBack }: Props) {
           </div>
         </div>
 
+        {/* Règles d'ouverture */}
+        <div>
+          <h3 className="text-sm font-bold text-amber-400 uppercase tracking-wider mb-2">Ouverture</h3>
+          <div className="bg-slate-800 rounded-lg px-4">
+            <ToggleSetting
+              label="Tierce obligatoire à l'ouverture"
+              value={localConfig.tierceObligatoire}
+              field="tierceObligatoire"
+            />
+            <p className="text-[11px] text-slate-500 pb-3 pt-1">
+              Si activé, ouvrir sans aucune tierce est une faute qu'un autre joueur peut signaler.
+            </p>
+          </div>
+        </div>
+
         {/* Carré */}
         <div>
           <h3 className="text-sm font-bold text-amber-400 uppercase tracking-wider mb-2">Carré</h3>

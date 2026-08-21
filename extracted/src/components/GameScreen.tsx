@@ -4,6 +4,7 @@ import { GameConfig, GameCard, Card, Combination, RANK_ORDER } from '@/game/core
 import { useGame } from '@/game/hooks/useGame';
 import { detectCombinationType, canAddToCombination, determineTierceSequence } from '@/game/core/validation';
 import { detectHandGroups, findGroupForCard, moveBlock } from '@/game/core/hand-groups';
+import { REPORTABLE_FAULTS } from '@/game/core/engine';
 import CardView from './CardView';
 import ScoreBoard from './ScoreBoard';
 import PlayerHand, { SortMode } from './PlayerHand';
@@ -42,13 +43,7 @@ function sortComboCards(combo: Combination): GameCard[] {
   }
   return combo.cards;
 }
-type Slot = 'bottom' | 'top' | 'left' | 'right' | 'top-left' | 'top-right';
-function getSlots(n: number): Slot[] {
-  if (n === 2) return ['bottom', 'top'];
-  if (n === 3) return ['bottom', 'top-left', 'top-right'];
-  if (n === 4) return ['bottom', 'left', 'top', 'right'];
-  return ['bottom', 'left', 'top-left', 'top-right', 'right'];
-}
+
 export default function GameScreen({ config, playerNames, onBack }: Props) {
   const { gameState, selectedCards, availableActions, actions } = useGame();
   const [showScores, setShowScores] = useState(false);
@@ -59,6 +54,12 @@ export default function GameScreen({ config, playerNames, onBack }: Props) {
   const [comboHover, setComboHover] = useState<string | null>(null);
   const [comboHoverValid, setComboHoverValid] = useState(false);
   const [showDiscardPile, setShowDiscardPile] = useState(false);
+  // Fault reporting: which AI player id is being accused (null = closed menu).
+  const [faultTargetId, setFaultTargetId] = useState<string | null>(null);
+  // User-defined LOCKED SETS: each is a list of card ids the player froze together
+  // from a selection. A locked set moves/selects as one block; its cards (incl. a
+  // joker) can't be pulled individually until the set is unlocked.
+  const [lockedSets, setLockedSets] = useState<string[][]>([]);
   const dragCardRef = useRef<string | null>(null);
   useEffect(() => { actions.startGame(config, playerNames); }, []); // eslint-disable-line
   useEffect(() => {
@@ -70,12 +71,44 @@ export default function GameScreen({ config, playerNames, onBack }: Props) {
   }, [gameState?.phase]); // eslint-disable-line
   useEffect(() => { if (message) { const t = setTimeout(() => setMessage(''), 5000); return () => clearTimeout(t); } }, [message]);
   const humanCards = gameState?.players[0]?.hand ?? [];
+  // Drop cards from locked sets once they leave the hand; remove sets < 2 cards.
+  useEffect(() => {
+    const ids = new Set(humanCards.map(c => c.id));
+    setLockedSets(prev => {
+      const cleaned = prev.map(s => s.filter(id => ids.has(id))).filter(s => s.length >= 2);
+      return cleaned.length === prev.length && cleaned.every((s, i) => s.length === prev[i].length) ? prev : cleaned;
+    });
+  }, [humanCards]);
   const orderedHand = useMemo(
     () => sortMode === 'manual' ? applyManualOrder(humanCards, manualOrder) : sortCards(humanCards, sortMode),
     [humanCards, sortMode, manualOrder]
   );
   // ── AUTO-DETECT GROUPS among adjacent cards ──
   const handGroups = useMemo(() => detectHandGroups(orderedHand), [orderedHand]);
+  // Find the locked set (if any) that contains a given card id.
+  const lockedSetForCard = useCallback((cardId: string): string[] | null =>
+    lockedSets.find(s => s.includes(cardId)) ?? null, [lockedSets]);
+  // Lock a list of cards together as a new set (shared by both flows).
+  const lockCards = useCallback((ids: string[]) => {
+    if (ids.length < 2) { setMessage('Sélectionnez au moins 2 cartes à verrouiller'); return; }
+    setLockedSets(prev => {
+      const cleaned = prev
+        .map(s => s.filter(id => !ids.includes(id)))
+        .filter(s => s.length >= 2);
+      return [...cleaned, [...ids]];
+    });
+    actions.clearSelection();
+    setMessage('🔒 Cartes verrouillées ensemble');
+  }, [actions]);
+  // Flow A — lock exactly the cards currently selected (one-by-one selection).
+  const lockSelection = useCallback(() => lockCards(selectedCards), [lockCards, selectedCards]);
+  // Flow B — lock a whole detected combo via its chevron.
+  const lockGroup = useCallback((cardIds: string[]) => lockCards(cardIds), [lockCards]);
+  // Unlock (remove) the set that contains this card.
+  const unlockSet = useCallback((cardId: string) => {
+    setLockedSets(prev => prev.filter(s => !s.includes(cardId)));
+    actions.clearSelection();
+  }, [actions]);
   const handleSortChange = useCallback((m: SortMode) => { setSortMode(m); setManualOrder([]); }, []);
   // ── Reorder: move a whole block (group or single card) ──
   const handleReorder = useCallback((blockIds: string[], toIndex: number) => {
@@ -127,7 +160,6 @@ export default function GameScreen({ config, playerNames, onBack }: Props) {
   const phase = gameState.turnState?.phase || 'waiting';
   const canAct = isMyTurn && phase === 'playing';
   const hasDrawnCard = gameState.turnState?.drawnCard;
-  const slots = getSlots(gameState.players.length);
   const selCards = selectedCards.map(id => hp.hand.find(c => c.id === id)).filter(Boolean) as GameCard[];
   const detectedType = selCards.length >= 3 ? detectCombinationType(selCards) : null;
   const handleAutoPlace = () => { if (!detectedType) { setMessage('Combinaison invalide'); return; } actions.place(selectedCards, detectedType); };
@@ -136,7 +168,7 @@ export default function GameScreen({ config, playerNames, onBack }: Props) {
     const c = hp.hand.find(x => x.id === selectedCards[0]); if (!c) return;
     actions.discardCard(selectedCards[0], !c.isJoker);
   };
-  const visibleDiscard = gameState.discardPile.slice(-6);
+  const visibleDiscard = gameState.discardPile.slice(-14);
   const renderCombo = (combo: Combination, interactive: boolean) => {
     const isHov = comboHover === combo.id;
     const border = isHov ? (comboHoverValid ? 'border-green-400 shadow-green-400/30 scale-[1.03]' : 'border-red-400 shadow-red-400/20') : 'border-white/10';
@@ -150,27 +182,29 @@ export default function GameScreen({ config, playerNames, onBack }: Props) {
       </div>
     );
   };
-  const renderPlayerAt = (slot: Slot) => {
-    let foundIdx = -1;
-    for (let i = 0; i < gameState.players.length; i++) if (slots[i] === slot) { foundIdx = i; break; }
-    if (foundIdx <= 0) return null;
+  // AI players (everyone except the human at index 0), spread EVENLY across the
+  // top edge with equal horizontal spacing so panels never overlap.
+  const aiPlayers = gameState.players.slice(1);
+  const renderAIPlayer = (aiPos: number, count: number) => {
+    const foundIdx = aiPos + 1; // player index (skip the human)
     const p = gameState.players[foundIdx];
     const combos = gameState.tableCombinations.filter(c => c.ownerId === p.id);
     const isCur = foundIdx === gameState.currentPlayerIndex;
     const isDlr = foundIdx === gameState.firstPlayerIndex;
-    const pos: Record<string, React.CSSProperties> = {
-      'top': { top: 4, left: '50%', transform: 'translateX(-50%)' },
-      'left': { left: 4, top: '45%', transform: 'translateY(-50%)' },
-      'right': { right: 4, top: '45%', transform: 'translateY(-50%)' },
-      'top-left': { top: 4, left: 8 },
-      'top-right': { top: 4, right: 8 },
-    };
+    // Evenly space the N panels: centers at (i+1)/(N+1) of the width.
+    const leftPct = ((aiPos + 1) / (count + 1)) * 100;
+    const widthCap = count >= 4 ? 'max-w-[19%]' : count === 3 ? 'max-w-[26%]' : 'max-w-[34%]';
     return (
-      <div key={p.id} className="absolute flex flex-col items-center gap-1 z-10 max-w-[45%]" style={pos[slot]}>
-        <div className={`px-2 py-0.5 rounded-full text-[10px] font-bold flex items-center gap-1 ${
+      <div key={p.id}
+        className={`absolute flex flex-col items-center gap-1 z-10 ${widthCap}`}
+        style={{ top: 4, left: `${leftPct}%`, transform: 'translateX(-50%)' }}>
+        <button
+          onClick={() => canAct && setFaultTargetId(p.id)}
+          title={canAct ? 'Cliquez pour signaler une faute' : undefined}
+          className={`px-2 py-0.5 rounded-full text-[10px] font-bold flex items-center gap-1 whitespace-nowrap transition-transform ${canAct ? 'hover:scale-105 cursor-pointer ring-1 ring-white/10' : 'cursor-default'} ${
           isCur ? 'bg-amber-500 text-white card-pulse' : p.status === 'opened' ? 'bg-green-900/60 text-green-400 border border-green-700' : 'bg-slate-800/80 text-slate-400'}`}>
-          {isDlr && '🎴'} 🤖 {p.name} ({p.hand.length}) {p.status === 'opened' && '✓'}
-        </div>
+          {isDlr && '🎴'} 🤖 {p.name} ({p.hand.length}) {p.status === 'opened' && '✓'} {canAct && <span className="text-red-300">⚠️</span>}
+        </button>
         {combos.length > 0 && <div className="flex flex-wrap gap-1 justify-center">{combos.map(c => renderCombo(c, canAct))}</div>}
       </div>
     );
@@ -196,27 +230,39 @@ export default function GameScreen({ config, playerNames, onBack }: Props) {
           {discardHover && <div className="absolute inset-0 flex items-center justify-center text-amber-400/30 text-lg font-bold pointer-events-none">Défausser ici</div>}
         </div>
         {message && <div className="absolute top-8 left-1/2 -translate-x-1/2 z-30 bg-slate-900/90 text-amber-400 px-4 py-2 rounded-lg text-sm font-bold fade-in cursor-pointer" onClick={() => setMessage('')}>{message}</div>}
-        {slots.map((slot, i) => i > 0 ? renderPlayerAt(slot) : null)}
+        {aiPlayers.map((_, i) => renderAIPlayer(i, aiPlayers.length))}
         <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 flex items-center gap-5 z-10">
           <div className="text-center">
             <CardView card={{ id: 'deck', isJoker: false, rank: 'A', suit: 'spades', pack: 1 }} faceDown
               onClick={isMyTurn && phase === 'must_draw' ? actions.draw : undefined} />
             <div className="text-[9px] text-white/40 mt-0.5">{gameState.deck.length}</div>
           </div>
-          <div className="relative cursor-pointer" style={{ width: 110, height: 120 }} onClick={() => setShowDiscardPile(true)}>
-            {visibleDiscard.length === 0 && <div className="absolute inset-0 flex items-center justify-center rounded-xl border-2 border-dashed border-white/10"><span className="text-white/15 text-[10px]">Défausse</span></div>}
-            {visibleDiscard.map((card, i) => {
-              const isLast = i === visibleDiscard.length - 1;
-              const seed = card.id.charCodeAt(0) + card.id.charCodeAt(Math.min(card.id.length - 1, 5));
-              const rot = isLast ? 0 : ((seed % 24) - 12);
-              const ox = isLast ? 28 : 8 + (seed % 30);
-              const oy = isLast ? 20 : 4 + ((seed * 3) % 30);
-              return (
-                <div key={card.id} className="absolute transition-all" style={{ left: ox, top: oy, transform: `rotate(${rot}deg)`, zIndex: i }}>
-                  <CardView card={card} small onClick={isLast && isMyTurn && phase === 'must_draw' && availableActions?.canChop ? actions.chop : undefined} />
+          <div className="relative" style={{ width: 260, height: 200 }}>
+            {/* The messy fanned discard heap */}
+            <div className="absolute inset-0 cursor-pointer" onClick={() => setShowDiscardPile(true)}>
+              {visibleDiscard.length === 0 && (
+                <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 flex items-center justify-center rounded-xl border-2 border-dashed border-white/15 px-6 py-8">
+                  <span className="text-white/20 text-xs">Défausse</span>
                 </div>
-              );
-            })}
+              )}
+              {visibleDiscard.map((card, i) => {
+                const isLast = i === visibleDiscard.length - 1;
+                // Stable per-card hash: a discarded card KEEPS its spot forever,
+                // it never moves when another player discards a new card.
+                let seed = 0;
+                for (let k = 0; k < card.id.length; k++) seed = (seed * 31 + card.id.charCodeAt(k)) >>> 0;
+                const rot = isLast ? 0 : ((seed % 60) - 30);
+                const ox = isLast ? 108 : 30 + (seed % 150);
+                const oy = isLast ? 64 : 20 + ((seed * 3) % 110);
+                return (
+                  <div key={card.id}
+                    className={`absolute transition-all ${isLast ? 'drop-shadow-lg' : ''}`}
+                    style={{ left: ox, top: oy, transform: `rotate(${rot}deg) ${isLast ? 'scale(1.2)' : ''}`, zIndex: isLast ? 50 : i }}>
+                    <CardView card={card} small highlight={isLast} onClick={isLast && isMyTurn && phase === 'must_draw' && availableActions?.canChop ? actions.chop : undefined} />
+                  </div>
+                );
+              })}
+            </div>
           </div>
         </div>
         {humanCombos.length > 0 && (
@@ -234,6 +280,35 @@ export default function GameScreen({ config, playerNames, onBack }: Props) {
           </div>
         </div>
       )}
+      {faultTargetId && (() => {
+        const target = gameState.players.find(p => p.id === faultTargetId);
+        return (
+          <div className="absolute inset-0 bg-black/70 z-40 flex items-center justify-center p-4" onClick={() => setFaultTargetId(null)}>
+            <div className="bg-slate-800 rounded-2xl p-4 max-w-sm w-full" onClick={e => e.stopPropagation()}>
+              <div className="flex justify-between items-center mb-1">
+                <h3 className="text-red-400 font-bold">⚠️ Signaler une faute</h3>
+                <button onClick={() => setFaultTargetId(null)} className="text-slate-400 font-bold text-lg">✕</button>
+              </div>
+              <p className="text-slate-300 text-sm mb-3">Contre <span className="font-bold text-amber-400">{target?.name}</span>. Si la faute est avérée, il écope de la pénalité et la manche se termine. Sinon, c'est vous qui êtes pénalisé.</p>
+              <div className="space-y-2">
+                {REPORTABLE_FAULTS.map(f => (
+                  <button
+                    key={f.type}
+                    onClick={() => {
+                      const res = actions.reportFaultAgainst(faultTargetId, f.type);
+                      setFaultTargetId(null);
+                      setMessage(res.message);
+                    }}
+                    className="w-full text-left px-3 py-2 rounded-lg bg-slate-700 hover:bg-slate-600 text-white text-sm font-semibold transition-colors">
+                    {f.label}
+                  </button>
+                ))}
+              </div>
+              <button onClick={() => setFaultTargetId(null)} className="btn-secondary w-full mt-3 py-2">Annuler</button>
+            </div>
+          </div>
+        );
+      })()}
       {gameState.phase === 'round_end' && (
         <div className="absolute inset-0 bg-black/80 flex items-center justify-center z-30 p-4">
           <div className="bg-slate-800 rounded-2xl p-5 w-full max-w-sm space-y-3 fade-in overflow-y-auto max-h-[90vh]">
@@ -272,9 +347,11 @@ export default function GameScreen({ config, playerNames, onBack }: Props) {
               {phase === 'playing' && (<>
                 {hasDrawnCard && selectedCards.length === 1 && <button onClick={() => actions.discardCard(selectedCards[0])} className="btn-danger text-xs px-3 py-1.5 whitespace-nowrap flex-shrink-0">🗑️ Jeter</button>}
                 {detectedType && <button onClick={handleAutoPlace} className="btn-primary text-xs px-3 py-1.5 whitespace-nowrap flex-shrink-0">🃏 Poser {detectedType === 'tierce' ? 'Tierce' : selCards.length === 4 ? 'Carré' : 'Brelan'}</button>}
+                {hp.status !== 'opened' && humanCombos.length > 0 && <button onClick={actions.takeBack} className="btn-secondary text-xs px-3 py-1.5 whitespace-nowrap flex-shrink-0">↩️ Reprendre</button>}
                 {selCards.length >= 3 && !detectedType && <span className="text-red-400 text-[10px] self-center">Invalide</span>}
                 <button onClick={handleDiscard} disabled={selectedCards.length !== 1} className="btn-danger text-xs px-3 py-1.5 whitespace-nowrap flex-shrink-0 disabled:opacity-40">🗑️ Défausser</button>
                 {selectedCards.length === 1 && hp.hand.find(c => c.id === selectedCards[0])?.isJoker && <button onClick={() => actions.discardCard(selectedCards[0], false)} className="btn-danger text-xs px-3 py-1.5 whitespace-nowrap flex-shrink-0 bg-gradient-to-r from-purple-600 to-purple-800">🃏 RJ</button>}
+                {selectedCards.length >= 2 && <button onClick={lockSelection} className="text-xs px-3 py-1.5 whitespace-nowrap flex-shrink-0 rounded-lg font-bold bg-gradient-to-r from-amber-500 to-yellow-500 text-slate-900">🔒 Verrouiller la sélection ({selectedCards.length})</button>}
                 {selectedCards.length > 0 && <button onClick={actions.clearSelection} className="btn-secondary text-xs px-2 py-1.5 flex-shrink-0">✕</button>}
               </>)}
             </div>
@@ -283,6 +360,9 @@ export default function GameScreen({ config, playerNames, onBack }: Props) {
             cards={orderedHand}
             selectedCards={isMyTurn ? selectedCards : []}
             groups={handGroups}
+            lockedSetForCard={lockedSetForCard}
+            onUnlockSet={isMyTurn ? unlockSet : () => {}}
+            onLockGroup={isMyTurn ? lockGroup : () => {}}
             onSelectCard={isMyTurn ? actions.selectCard : () => {}}
             onSelectGroup={isMyTurn ? handleSelectGroup : () => {}}
             disabled={!isMyTurn || phase === 'must_draw'}

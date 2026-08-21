@@ -561,6 +561,7 @@ export function createFault(
     bad_joker_recovery: 'Mauvaise récupération de Joker',
     playable_discard: 'Défausse jouable après ouverture',
     carre_not_recovered: 'Carré non récupéré',
+    opened_without_tierce: 'Ouverture sans tierce (tierce obligatoire)',
     other_violation: 'Autre violation des règles',
   };
 

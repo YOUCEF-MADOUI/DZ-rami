@@ -3,7 +3,7 @@
 // =====================================================
 import {
   GameState, GameConfig, GameCard, Player, Combination,
-  TurnState, TurnAction, RoundResult, Fault,
+  TurnState, TurnAction, RoundResult, Fault, FaultType,
   DEFAULT_CONFIG, INITIAL_THRESHOLDS, GamePhase,
   getCardDisplayName, RoundEndType,
 } from './types';
@@ -20,6 +20,7 @@ let combinationIdCounter = 0;
 function nextCombinationId(): string {
   return `combo-${++combinationIdCounter}`;
 }
+
 
 export function createInitialGameState(config: GameConfig, playerNames: string[]): GameState {
   const playerCount = config.playerCount;
@@ -135,8 +136,12 @@ export function drawCard(state: GameState): GameState {
   }
 
   if (state.deck.length === 0) {
-    // Need to reshuffle
-    return handleEmptyDeck(state);
+    // Need to reshuffle the discard pile back into the deck.
+    const reshuffled = handleEmptyDeck(state);
+    // If the round ended (null round) or still no deck available, stop here.
+    if (reshuffled.phase !== 'playing' || reshuffled.deck.length === 0) return reshuffled;
+    // Otherwise continue drawing from the freshly reshuffled deck.
+    return drawCard(reshuffled);
   }
 
   const card = state.deck[0];
@@ -300,6 +305,29 @@ export function placeCombination(
   };
 }
 
+// ---- TAKE BACK (undo an unfinished first pose) ----
+
+// Returns all combinations the current (still not-opened) player laid this turn
+// back into their hand. Lets a player reclaim cards when their pose doesn't
+// reach the SUITE, instead of being stuck.
+export function takeBackCombinations(state: GameState): GameState {
+  if (!state.turnState || state.turnState.phase !== 'playing') return state;
+  const currentPlayer = state.players[state.currentPlayerIndex];
+  if (currentPlayer.status === 'opened') return state; // opened players can't take back
+
+  const own = state.tableCombinations.filter(c => c.ownerId === currentPlayer.id);
+  if (own.length === 0) return state;
+
+  const returnedCards = own.flatMap(c => c.cards);
+  return {
+    ...state,
+    tableCombinations: state.tableCombinations.filter(c => c.ownerId !== currentPlayer.id),
+    players: state.players.map(p =>
+      p.id === currentPlayer.id ? { ...p, hand: [...p.hand, ...returnedCards] } : p
+    ),
+  };
+}
+
 // ---- ADD TO COMBINATION ----
 
 export function addToCombination(
@@ -352,9 +380,8 @@ export function addToCombination(
     ),
   };
 
-  if (updatedCombo.type === 'carre' && updatedCombo.cards.length === 4) {
-    newState = handleCompletedCarre(newState, updatedCombo);
-  }
+  // NOTE: completed carrés stay on the table until the end of the round
+  // (they are no longer removed / reshuffled into the deck).
 
   return newState;
 }
@@ -433,6 +460,27 @@ export function discard(state: GameState, cardId: string, faceDown: boolean = fa
   const currentPlayer = state.players[state.currentPlayerIndex];
   const card = currentPlayer.hand.find(c => c.id === cardId);
   if (!card) return state;
+
+  // OPENING RULE (enforced): if a not-opened player has laid combinations this
+  // turn but the pose does NOT reach the SUITE in VIERGE, the opening is illegal.
+  // We refuse the discard entirely (and take the combos back into the hand) so the
+  // player simply cannot "open" below the SUITE.
+  const ownPlacedThisTurn = state.tableCombinations.filter(c => c.ownerId === currentPlayer.id);
+  if (currentPlayer.status === 'not_opened' && ownPlacedThisTurn.length > 0) {
+    const hasJokerInHand = currentPlayer.hand.some(c => c.isJoker && c.id !== cardId);
+    const pose = validateFirstPose(
+      ownPlacedThisTurn,
+      state.suite,
+      state.initialThreshold,
+      hasJokerInHand,
+      state.config
+    );
+    if (!pose.valid) {
+      // Reject: nothing changes, the UI keeps the player's turn so they can
+      // add more cards or take the combinations back.
+      return state;
+    }
+  }
 
   // Validate the turn before allowing discard
   const validationResult = validateTurnEnd(state, currentPlayer, card, faceDown);
@@ -605,6 +653,117 @@ function validateTurnEnd(
 
 // ---- Round Score Calculation ----
 
+// ---- FAULT REPORTING (a player accuses another of a rule violation) ----
+
+export interface FaultOption {
+  type: FaultType;
+  label: string;
+}
+
+// The faults a player can report against someone by clicking their name.
+export const REPORTABLE_FAULTS: FaultOption[] = [
+  { type: 'opened_without_tierce', label: 'Ouverture sans tierce' },
+  { type: 'below_suite', label: 'Ouverture sous la SUITE' },
+  { type: 'playable_discard', label: 'A défaussé une carte jouable' },
+  { type: 'invalid_combination', label: 'Combinaison invalide sur la table' },
+  { type: 'carre_not_recovered', label: 'Carré non récupéré' },
+];
+
+// Checks whether the accused player has actually committed the claimed fault,
+// based on the current game state.
+function isFaultTrue(state: GameState, accusedId: string, type: FaultType): boolean {
+  const accused = state.players.find(p => p.id === accusedId);
+  if (!accused) return false;
+  const combos = state.tableCombinations.filter(c => c.ownerId === accusedId);
+
+  switch (type) {
+    case 'opened_without_tierce': {
+      // Only meaningful if the option is on and the player has opened.
+      if (!state.config.tierceObligatoire) return false;
+      if (accused.status !== 'opened') return false;
+      return !combos.some(c => c.type === 'tierce');
+    }
+    case 'below_suite': {
+      // The player opened but their opening VIERGE was below the SUITE.
+      if (accused.status !== 'opened') return false;
+      if (accused.openingValue == null) return false;
+      return accused.openingValue < state.suite;
+    }
+    case 'invalid_combination': {
+      // Any combination on the table by this player that fails validation.
+      return combos.some(c => !validateCombination(c).valid);
+    }
+    case 'carre_not_recovered': {
+      // A carré on the table still holding a joker that could have been recovered.
+      return combos.some(c => c.type === 'carre' && getJokerCount(c.cards) > 0);
+    }
+    case 'playable_discard': {
+      // The last discarded card is playable on an opened player's table combos.
+      if (accused.status !== 'opened') return false;
+      const last = state.discardPile[state.discardPile.length - 1];
+      if (!last || last.isJoker) return false;
+      return isCardPlayableOnTable(last, state.tableCombinations);
+    }
+    default:
+      return false;
+  }
+}
+
+export interface FaultReportResult {
+  state: GameState;
+  valid: boolean;
+  message: string;
+}
+
+// A player (accuserId) reports a fault against another (accusedId). If the fault
+// is real, the accused gets the penalty and the round ends immediately. If it's
+// a false accusation, the accuser is penalised instead (round continues).
+export function reportFault(
+  state: GameState,
+  accuserId: string,
+  accusedId: string,
+  type: FaultType
+): FaultReportResult {
+  if (state.phase !== 'playing') {
+    return { state, valid: false, message: 'Impossible de signaler maintenant' };
+  }
+  const accused = state.players.find(p => p.id === accusedId);
+  const accuser = state.players.find(p => p.id === accuserId);
+  if (!accused || !accuser) return { state, valid: false, message: 'Joueur introuvable' };
+
+  const label = REPORTABLE_FAULTS.find(f => f.type === type)?.label ?? 'Faute';
+
+  if (isFaultTrue(state, accusedId, type)) {
+    // Correct accusation: penalise the accused and end the round.
+    const fault = createFault(accusedId, type, state.config);
+    const stateWithFault: GameState = { ...state, faults: [...state.faults, fault] };
+    const roundResult = calculateRoundScores(stateWithFault, accuserId, 'RS');
+    const finalPlayers = state.players.map(p => {
+      const roundScore = roundResult.scores[p.id] || 0;
+      return { ...p, score: p.score + roundScore, roundScores: [...p.roundScores, roundScore] };
+    });
+    return {
+      state: {
+        ...stateWithFault,
+        phase: 'round_end',
+        players: finalPlayers,
+        roundResults: [...state.roundResults, roundResult],
+        turnState: null,
+      },
+      valid: true,
+      message: `Faute confirmée : ${accused.name} — ${label} (+${fault.penalty}). Manche terminée.`,
+    };
+  }
+
+  // False accusation: the accuser takes the penalty, the round continues.
+  const penaltyFault = createFault(accuserId, 'other_violation', state.config);
+  return {
+    state: { ...state, faults: [...state.faults, penaltyFault] },
+    valid: false,
+    message: `Fausse accusation : ${accused.name} n'a pas commis « ${label} ». ${accuser.name} écope de +${penaltyFault.penalty}.`,
+  };
+}
+
 export function calculateRoundScores(
   state: GameState,
   winnerId: string,
@@ -669,30 +828,31 @@ function handleEmptyDeck(state: GameState): GameState {
     }
   }
 
-  // Reshuffle discard pile into deck
-  const newDeck = shuffleDeck([...state.discardPile]);
+  // Refill the deck. Completed carrés stayed on the table during the whole base;
+  // now that the deck is empty, remove every complete carré (4 cards) from the
+  // table and shuffle those cards into the new deck together with the discard pile.
+  const completedCarres = state.tableCombinations.filter(
+    c => c.type === 'carre' && c.cards.length === 4
+  );
+  const carreCards = completedCarres.flatMap(c => c.cards);
+  const remainingCombinations = state.tableCombinations.filter(
+    c => !(c.type === 'carre' && c.cards.length === 4)
+  );
+
+  const newDeck = shuffleDeck([...state.discardPile, ...carreCards]);
 
   return {
     ...state,
     deck: newDeck,
     discardPile: [],
+    tableCombinations: remainingCombinations,
     cycleCount: newCycleCount,
   };
 }
 
 // ---- Completed Carré ----
 
-function handleCompletedCarre(state: GameState, combo: Combination): GameState {
-  // Remove from table and add back to deck
-  const updatedCombinations = state.tableCombinations.filter(c => c.id !== combo.id);
-  const updatedDeck = shuffleDeck([...state.deck, ...combo.cards]);
 
-  return {
-    ...state,
-    tableCombinations: updatedCombinations,
-    deck: updatedDeck,
-  };
-}
 
 // ---- Get Available Actions ----
 
