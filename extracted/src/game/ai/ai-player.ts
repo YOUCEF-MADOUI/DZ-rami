@@ -16,7 +16,7 @@ import {
 import {
   drawCard, chopCard, placeCombination,
   addToCombination, recoverJoker, discard,
-  getAvailableActions, canChop,
+  getAvailableActions, canChop, rejectChop,
 } from '../core/engine';
 
 export interface AIDecision {
@@ -66,6 +66,14 @@ function shouldChop(state: GameState, player: Player): boolean {
 
   const chopCardValue = state.discardPile[state.discardPile.length - 1];
   if (!chopCardValue) return false;
+
+  // CHOP-for-opening rule: a non-opened player may only chop if the chopped card
+  // actually lets them open this very turn — otherwise chopping would leave them
+  // unable to discard and the turn would be blocked.
+  if (state.config.chopSeulementOuverture && player.status === 'not_opened') {
+    const testHand = [...player.hand, chopCardValue];
+    return findBestCombinations(testHand, state).canOpen;
+  }
 
   // If the card helps with combinations, chop it
   const helpfulness = evaluateCardForHand(chopCardValue, player.hand, state);
@@ -410,7 +418,28 @@ function aiDiscardAndAdvance(state: GameState, meIndex: number): GameState {
   let result = tryDiscard(state);
   if (result) return result;
 
-  // 2) The discard was rejected (most likely an illegal opening below SUITE).
+  // 2) CHOP-for-opening rule: the discard was refused because the AI chopped
+  //    without being able to open. Cancel the chop, draw from the deck, then
+  //    discard normally so the turn always advances.
+  if (
+    state.config.chopSeulementOuverture &&
+    state.turnState?.drawSource === 'chop' &&
+    state.players[meIndex].status === 'not_opened'
+  ) {
+    const afterReject = rejectChop(state);
+    const afterDraw = drawCard(afterReject);
+    if (afterDraw.phase !== 'playing' || afterDraw.currentPlayerIndex !== meIndex) {
+      // e.g. null round after reshuffle — the state already moved on.
+      return afterDraw;
+    }
+    result = tryDiscard(afterDraw);
+    if (result) return result;
+    // Discard still refused (e.g. invalid opening combos left on the table):
+    // continue with the post-cancel state for the take-back safety below.
+    state = afterDraw;
+  }
+
+  // 3) The discard was rejected (most likely an illegal opening below SUITE).
   //    Take back this AI's just-placed combinations into its hand and retry.
   const me = state.players[meIndex];
   if (me.status === 'not_opened') {
@@ -429,7 +458,7 @@ function aiDiscardAndAdvance(state: GameState, meIndex: number): GameState {
     }
   }
 
-  // 3) Last-resort safety: discard any remaining card so the turn always ends.
+  // 4) Last-resort safety: discard any remaining card so the turn always ends.
   const cur = state.players[meIndex];
   if (cur.hand.length > 0) {
     const forced = discard(state, cur.hand[0].id, !cur.hand[0].isJoker);

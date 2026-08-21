@@ -8,7 +8,7 @@ import {
   createInitialGameState, performDrawing, startNewRound,
   drawCard, chopCard, placeCombination, addToCombination,
   recoverJoker, discard, getAvailableActions, canChop,
-  takeBackCombinations, reportFault,
+  takeBackCombinations, reportFault, rejectChop,
   AvailableActions,
 } from '../core/engine';
 import { FaultType } from '../core/types';
@@ -19,6 +19,7 @@ export interface GameActions {
   newRound: () => void;
   draw: () => void;
   chop: () => void;
+  cancelChop: () => void;
   place: (cardIds: string[], type: 'tierce' | 'carre') => void;
   addToCombo: (cardId: string, comboId: string) => void;
   recoverJokerAction: (comboId: string, replacementCardId: string) => void;
@@ -88,6 +89,13 @@ export function useGame() {
     setGameState(state);
   }, [gameState]);
 
+  const cancelChop = useCallback(() => {
+    if (!gameState) return;
+    const state = rejectChop(gameState);
+    setGameState(state);
+    setSelectedCards([]);
+  }, [gameState]);
+
   const place = useCallback((cardIds: string[], type: 'tierce' | 'carre') => {
     if (!gameState) return;
     const state = placeCombination(gameState, cardIds, type);
@@ -149,6 +157,7 @@ export function useGame() {
     newRound,
     draw,
     chop,
+    cancelChop,
     place,
     addToCombo,
     recoverJokerAction,

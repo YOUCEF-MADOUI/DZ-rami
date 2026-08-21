@@ -160,6 +160,7 @@ export default function GameScreen({ config, playerNames, onBack }: Props) {
   const phase = gameState.turnState?.phase || 'waiting';
   const canAct = isMyTurn && phase === 'playing';
   const hasDrawnCard = gameState.turnState?.drawnCard;
+  const chopMustOpen = config.chopSeulementOuverture && gameState.turnState?.drawSource === 'chop' && hp.status !== 'opened';
   const selCards = selectedCards.map(id => hp.hand.find(c => c.id === id)).filter(Boolean) as GameCard[];
   const detectedType = selCards.length >= 3 ? detectCombinationType(selCards) : null;
   const handleAutoPlace = () => { if (!detectedType) { setMessage('Combinaison invalide'); return; } actions.place(selectedCards, detectedType); };
@@ -345,6 +346,12 @@ export default function GameScreen({ config, playerNames, onBack }: Props) {
                 {availableActions?.canChop && <button onClick={actions.chop} className="btn-primary text-xs px-3 py-1.5 whitespace-nowrap flex-shrink-0 bg-gradient-to-r from-purple-600 to-purple-800">✋ CHOP</button>}
               </>)}
               {phase === 'playing' && (<>
+                {chopMustOpen && (
+                  <>
+                    <span className="text-amber-400 text-[11px] self-center whitespace-nowrap font-bold">✋ CHOP : vous devez ouvrir ou annuler</span>
+                    <button onClick={actions.cancelChop} className="btn-secondary text-xs px-3 py-1.5 whitespace-nowrap flex-shrink-0">↩️ Annuler CHOP</button>
+                  </>
+                )}
                 {hasDrawnCard && selectedCards.length === 1 && <button onClick={() => actions.discardCard(selectedCards[0])} className="btn-danger text-xs px-3 py-1.5 whitespace-nowrap flex-shrink-0">🗑️ Jeter</button>}
                 {detectedType && <button onClick={handleAutoPlace} className="btn-primary text-xs px-3 py-1.5 whitespace-nowrap flex-shrink-0">🃏 Poser {detectedType === 'tierce' ? 'Tierce' : selCards.length === 4 ? 'Carré' : 'Brelan'}</button>}
                 {hp.status !== 'opened' && humanCombos.length > 0 && <button onClick={actions.takeBack} className="btn-secondary text-xs px-3 py-1.5 whitespace-nowrap flex-shrink-0">↩️ Reprendre</button>}
