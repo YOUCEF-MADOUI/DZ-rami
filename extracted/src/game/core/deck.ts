@@ -35,9 +35,18 @@ export function createDeck(): GameCard[] {
   return cards; // Total: 108 cards
 }
 
+// Synchronous dependency injection for authoritative servers; solo keeps its RNG.
+// Never pass an async operation: the scope ends as soon as operation returns.
+let scopedRandom: (() => number) | undefined;
+export function withDeckRandom<T>(random: () => number, operation: () => T): T {
+  const previous = scopedRandom;
+  scopedRandom = random;
+  try { return operation(); } finally { scopedRandom = previous; }
+}
+
 export function shuffleDeck(deck: GameCard[], rng?: () => number): GameCard[] {
   const shuffled = [...deck];
-  const random = rng || Math.random;
+  const random = rng || scopedRandom || Math.random;
   
   // Fisher-Yates shuffle
   for (let i = shuffled.length - 1; i > 0; i--) {
@@ -48,52 +57,44 @@ export function shuffleDeck(deck: GameCard[], rng?: () => number): GameCard[] {
   return shuffled;
 }
 
+/**
+ * Deal one round exactly once: the round starter receives 15 cards and every
+ * other player receives 14.
+ *
+ * `playOrder` lists the player indices in the order the seats follow around
+ * the table (SUD → EST → NORD-EST → NORD-OUEST → OUEST). Dealing therefore
+ * follows the same rotation as the turns instead of an arbitrary array index.
+ */
 export function dealCards(
   deck: GameCard[],
-  playerCount: number,
+  playOrder: number[],
   firstPlayerIndex: number
 ): { hands: GameCard[][]; remainingDeck: GameCard[] } {
-  const hands: GameCard[][] = Array.from({ length: playerCount }, () => []);
-  let deckCopy = [...deck];
-  
-  // First player gets 15 cards, others get 14
-  for (let i = 0; i < playerCount; i++) {
-    // Anti-clockwise order from first player
-    const playerIdx = (firstPlayerIndex + (playerCount - i)) % playerCount;
-    // Actually, let's deal starting from first player going anti-clockwise
-    // In anti-clockwise: firstPlayer, then firstPlayer-1, etc.
-    const actualIdx = (firstPlayerIndex - i + playerCount) % playerCount;
-    const cardCount = actualIdx === firstPlayerIndex ? 15 : 14;
-    
-    hands[actualIdx] = deckCopy.splice(0, cardCount);
+  const playerCount = playOrder.length;
+  if (!Number.isInteger(playerCount) || playerCount < 2 || playerCount > 5) {
+    throw new RangeError(`Unsupported player count: ${playerCount}`);
   }
-  
-  return { hands, remainingDeck: deckCopy };
-}
+  if (playerCount !== new Set(playOrder).size) {
+    throw new RangeError('The play order must list every player exactly once');
+  }
+  const startPosition = playOrder.indexOf(firstPlayerIndex);
+  if (startPosition < 0) {
+    throw new RangeError(`Invalid first player index: ${firstPlayerIndex}`);
+  }
 
-// Simpler dealing: first player = 15, rest = 14, deal in order
-export function dealCardsSimple(
-  deck: GameCard[],
-  playerCount: number,
-  firstPlayerIndex: number
-): { hands: GameCard[][]; remainingDeck: GameCard[] } {
   const hands: GameCard[][] = Array.from({ length: playerCount }, () => []);
   let cardIndex = 0;
-  
-  // Deal to each player
-  for (let p = 0; p < playerCount; p++) {
-    // Anti-clockwise from first player
-    const playerIdx = (firstPlayerIndex - p + playerCount) % playerCount;
-    const cardCount = playerIdx === firstPlayerIndex ? 15 : 14;
-    
-    for (let c = 0; c < cardCount; c++) {
-      if (cardIndex < deck.length) {
-        hands[playerIdx].push(deck[cardIndex]);
-        cardIndex++;
-      }
+
+  if (deck.length < playerCount * 14 + 1) throw new RangeError('Not enough cards to deal a complete round');
+  // Deal fourteen laps, one physical card per seat, then the dealer/starter's fifteenth.
+  for (let lap = 0; lap < 14; lap++) {
+    for (let offset = 0; offset < playerCount; offset++) {
+      const playerIndex = playOrder[(startPosition + offset) % playerCount];
+      hands[playerIndex].push(deck[cardIndex++]);
     }
   }
-  
+  hands[firstPlayerIndex].push(deck[cardIndex++]);
+
   return { hands, remainingDeck: deck.slice(cardIndex) };
 }
 

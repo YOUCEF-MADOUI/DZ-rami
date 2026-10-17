@@ -2,7 +2,7 @@
 // TESTS — Automatic hand group detection & block moving
 // Run with: npx tsx src/game/tests/hand-groups-tests.ts
 // =====================================================
-import { detectHandGroups, findGroupForCard, moveBlock } from '../core/hand-groups';
+import { detectHandGroups, findGroupForCard, getDragBlock, moveBlock } from '../core/hand-groups';
 import { Card, JokerCard, GameCard } from '../core/types';
 let passed = 0, failed = 0;
 function assertEqual<T>(a: T, e: T, m: string) {
@@ -68,12 +68,12 @@ console.log('\nTEST 5 — Tierce de 5 cartes');
   assertEqual(groups.length, 1, '1 groupe');
   assertEqual(groups[0]?.cardIds.length, 5, '5 cartes (tierce max)');
 }
-console.log('\nTEST 6 — Combinaison avec Joker');
+console.log('\nTEST 6 — Le Joker reste libre pour une décision manuelle');
 {
   const hand: GameCard[] = [card('A','hearts'), card('K','hearts'), joker(1)];
   const groups = detectHandGroups(hand);
-  assertEqual(groups.length, 1, 'Groupe avec Joker détecté');
-  assertEqual(groups[0]?.type, 'tierce', 'A♥ K♥ JOKER = tierce');
+  assertEqual(groups.length, 0, 'Aucun groupe automatique ne consomme le Joker');
+  assertEqual(findGroupForCard(groups, 'J1'), null, 'Le Joker reste hors des groupes auto-détectés');
 }
 console.log('\nTEST 7 — Aucun groupe si non adjacent');
 {
@@ -91,26 +91,33 @@ console.log('\nTEST 8 — findGroupForCard');
   const none = findGroupForCard(groups, '7c1');
   assertEqual(none, null, '7♣ n\'appartient à aucun groupe');
 }
-console.log('\nTEST 9 — moveBlock: déplacer un groupe vers la fin');
+console.log('\nTEST 9 — Seul le verrouillage manuel déplace un groupe entier');
+{
+  const unlockedBlock = getDragBlock('Qh1', null);
+  assertArr(unlockedBlock, ['Qh1'], 'Groupe détecté mais déverrouillé : seule la carte bouge');
+  const lockedBlock = getDragBlock('Qh1', ['Qs1', 'Qh1', 'Qd1']);
+  assertArr(lockedBlock, ['Qs1', 'Qh1', 'Qd1'], 'Groupe explicitement verrouillé : toutes les cartes bougent');
+}
+console.log('\nTEST 10 — moveBlock: déplacer un groupe vers la fin');
 {
   // A | Q Q Q | 7 8 9  →  A | 7 8 9 | Q Q Q
   const ids = ['A', 'Q1', 'Q2', 'Q3', '7', '8', '9'];
   const result = moveBlock(ids, ['Q1', 'Q2', 'Q3'], 7);
   assertArr(result, ['A', '7', '8', '9', 'Q1', 'Q2', 'Q3'], 'Groupe déplacé à la fin');
 }
-console.log('\nTEST 10 — moveBlock: déplacer un groupe au début');
+console.log('\nTEST 11 — moveBlock: déplacer un groupe au début');
 {
   const ids = ['A', '7', '8', '9', 'Q1', 'Q2', 'Q3'];
   const result = moveBlock(ids, ['Q1', 'Q2', 'Q3'], 0);
   assertArr(result, ['Q1', 'Q2', 'Q3', 'A', '7', '8', '9'], 'Groupe déplacé au début');
 }
-console.log('\nTEST 11 — moveBlock: carte simple');
+console.log('\nTEST 12 — moveBlock: carte simple');
 {
   const ids = ['A', 'B', 'C', 'D'];
   const result = moveBlock(ids, ['A'], 3);
   assertArr(result, ['B', 'C', 'A', 'D'], 'Carte simple déplacée');
 }
-console.log('\nTEST 12 — moveBlock: groupe au milieu');
+console.log('\nTEST 13 — moveBlock: groupe au milieu');
 {
   const ids = ['A', 'B', 'X1', 'X2', 'X3', 'C', 'D'];
   const result = moveBlock(ids, ['X1', 'X2', 'X3'], 6);

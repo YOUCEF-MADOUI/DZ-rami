@@ -1,18 +1,22 @@
 'use client';
 
 import { useState } from 'react';
-import { GameConfig } from '@/game/core/types';
+import { GameConfig, INITIAL_THRESHOLDS } from '@/game/core/types';
 
 interface Props {
+  onOnline?: () => void;
+  initialMode?: 'menu' | 'multi';
+  onStartTeams?: () => void;
+  onResume?: () => void;
   onStartSolo: (playerCount: 2 | 3 | 4 | 5) => void;
   onStartMulti: (playerCount: 2 | 3 | 4 | 5, names: string[]) => void;
   onSettings: () => void;
   config: GameConfig;
 }
 
-export default function HomeScreen({ onStartSolo, onStartMulti, onSettings, config }: Props) {
-  const [mode, setMode] = useState<'menu' | 'solo' | 'multi'>('menu');
-  const [playerCount, setPlayerCount] = useState<2 | 3 | 4 | 5>(4);
+export default function HomeScreen({ onStartSolo, onStartMulti, onSettings, config, onResume, onStartTeams, onOnline, initialMode='menu' }: Props) {
+  const [mode, setMode] = useState<'menu' | 'solo' | 'multi'>(initialMode);
+  const [playerCount, setPlayerCount] = useState<2 | 3 | 4 | 5>(config.playerCount);
   const [names, setNames] = useState<string[]>(['', '', '', '', '']);
 
   if (mode === 'solo') {
@@ -38,7 +42,7 @@ export default function HomeScreen({ onStartSolo, onStartMulti, onSettings, conf
         </div>
 
         <div className="text-center mb-6 text-sm text-slate-400">
-          <p>Seuil: {config.playerCount === 2 ? 111 : config.playerCount === 3 ? 101 : config.playerCount === 4 ? 91 : 71}</p>
+          <p>Seuil: {INITIAL_THRESHOLDS[playerCount]}</p>
         </div>
 
         <button onClick={() => onStartSolo(playerCount)} className="btn-primary w-full max-w-xs text-lg py-3 mb-3">
@@ -54,7 +58,13 @@ export default function HomeScreen({ onStartSolo, onStartMulti, onSettings, conf
   if (mode === 'multi') {
     return (
       <div className="h-full flex flex-col items-center justify-start p-6 pt-12 bg-gradient-to-b from-slate-900 via-emerald-950 to-slate-900 overflow-y-auto">
-        <h2 className="text-2xl font-bold text-amber-400 mb-4">Multijoueur Local</h2>
+        <h2 className="text-2xl font-bold text-amber-400 mb-2">Multijoueur local</h2>
+        <p className="text-sm text-slate-300 text-center mb-1 max-w-sm">
+          Plusieurs joueurs sur le même appareil, chacun leur tour.
+        </p>
+        <p className="text-[11px] text-slate-500 text-center mb-5 max-w-sm">
+          Avant chaque tour, l’écran « Passe l’appareil » masque la main du joueur précédent.
+        </p>
         
         <div className="flex gap-2 mb-4">
           {([2, 3, 4, 5] as const).map(n => (
@@ -120,6 +130,8 @@ export default function HomeScreen({ onStartSolo, onStartMulti, onSettings, conf
 
       {/* Menu Buttons */}
       <div className="w-full max-w-xs space-y-3">
+        {onStartTeams&&<button onClick={onStartTeams} className="btn-primary w-full py-3">4 joueurs — 2 contre 2</button>}
+        {onResume&&<button onClick={onResume} className="btn-primary w-full py-3">▶ Continuer la partie solo</button>}
         <button
           onClick={() => setMode('solo')}
           className="btn-primary w-full text-lg py-4 flex items-center justify-center gap-3"
@@ -129,7 +141,7 @@ export default function HomeScreen({ onStartSolo, onStartMulti, onSettings, conf
         </button>
 
         <button
-          onClick={() => setMode('multi')}
+          onClick={() => onOnline ? onOnline() : setMode('multi')}
           className="btn-primary w-full text-lg py-4 flex items-center justify-center gap-3"
         >
           <span className="text-2xl">👥</span>

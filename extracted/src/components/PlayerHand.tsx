@@ -1,237 +1,160 @@
 'use client';
-import { useRef, useCallback, useState } from 'react';
+import type { CSSProperties, PointerEvent as ReactPointerEvent } from 'react';
+import { useRef, useState, useEffect } from 'react';
+import { createPortal } from 'react-dom';
 import { GameCard } from '@/game/core/types';
-import { DetectedGroup, findGroupForIndex, GROUP_COLORS } from '@/game/core/hand-groups';
+import { DetectedGroup, getDragBlock, GROUP_COLORS, moveBlock } from '@/game/core/hand-groups';
+import { handLayout, insertionFromOffsets } from './presentation/hand-layout';
 import CardView from './CardView';
 export type SortMode = 'manual' | 'suit' | 'rank';
 interface Props {
-  cards: GameCard[];
-  selectedCards: string[];
-  groups: DetectedGroup[];
-  lockedSetForCard?: (cardId: string) => string[] | null;  // user-locked set a card belongs to
-  onUnlockSet?: (cardId: string) => void;                   // unlock the set containing this card
-  onLockGroup?: (cardIds: string[]) => void;                // lock a detected combo via its chevron
-  onSelectCard: (cardId: string) => void;
-  onSelectGroup: (cardIds: string[]) => void;
-  disabled?: boolean;                    // blocks game actions, NOT drag
-  sortMode: SortMode;
-  onSortChange: (mode: SortMode) => void;
+  cards: GameCard[]; selectedCards: string[]; groups: DetectedGroup[];
+  lockedSetForCard?: (cardId: string) => string[] | null;
+  onUnlockSet?: (cardId: string) => void; onLockGroup?: (cardIds: string[]) => void;
+  onSelectCard: (cardId: string) => void; onSelectGroup: (cardIds: string[]) => void;
+  disabled?: boolean; sortMode: SortMode; onSortChange: (mode: SortMode) => void;
   onReorder: (blockIds: string[], toIndex: number) => void;
-  onCardDragStart?: (cardId: string) => void;
-  onCardDragEnd?: () => void;
+  onCardDragStart?: (cardId: string) => void; onCardDragEnd?: () => void;
+  onTouchDrop?: (cardId: string, clientX: number, clientY: number) => boolean;
 }
-const CARD_W = 64;
-const GAP = 6;
-export default function PlayerHand({
-  cards, selectedCards, groups, lockedSetForCard, onUnlockSet, onLockGroup, onSelectCard, onSelectGroup, disabled,
-  sortMode, onSortChange, onReorder, onCardDragStart, onCardDragEnd,
-}: Props) {
-  // Locked set (user-frozen) a card belongs to, if any.
-  const lockedSet = useCallback((cardId: string): string[] | null =>
-    lockedSetForCard ? lockedSetForCard(cardId) : null, [lockedSetForCard]);
-  const containerRef = useRef<HTMLDivElement>(null);
-  const [dragBlock, setDragBlock] = useState<string[] | null>(null);
-  const [overIdx, setOverIdx] = useState<number | null>(null);
-  const isInternalRef = useRef(false);
-  // ── Resolve what block a card belongs to ──
-  // A card inside a user-locked set moves with the whole set; otherwise it's free.
-  const blockForIndex = useCallback((index: number): string[] => {
-    const id = cards[index]?.id;
-    if (!id) return [];
-    const set = lockedSet(id);
-    return set ? set : [id];
-  }, [cards, lockedSet]);
-  // ── Click: select the whole locked set if the card is locked, else single card ──
-  const handleClick = useCallback((index: number) => {
-    if (disabled) return;
-    const id = cards[index]?.id;
-    const set = lockedSet(id);
-    if (set) { onSelectGroup(set); return; }
-    onSelectCard(id);
-  }, [disabled, cards, onSelectCard, onSelectGroup, lockedSet]);
-  // ── Drag start ──
-  const handleDragStart = useCallback((e: React.DragEvent, index: number) => {
-    const block = blockForIndex(index);
-    setDragBlock(block);
-    isInternalRef.current = false;
-    e.dataTransfer.effectAllowed = 'move';
-    e.dataTransfer.setData('text/plain', block[0] ?? '');
-    // Notify parent which card is being dragged (for drop targets outside the hand)
-    onCardDragStart?.(block.length === 1 ? block[0] : block[0]);
-  }, [blockForIndex, onCardDragStart]);
-  const handleDragOver = useCallback((e: React.DragEvent, index: number) => {
-    e.preventDefault();
-    isInternalRef.current = true;
-    setOverIdx(index);
-  }, []);
-  const handleDragEnd = useCallback(() => {
-    if (isInternalRef.current && dragBlock && overIdx !== null) {
-      onReorder(dragBlock, overIdx);
+interface Gesture {
+  pointerId:number; cardId:string; block:string[]; original:string[]; offsets:number[];
+  x:number; y:number; startX:number; startY:number; offsetX:number; offsetY:number;
+  width:number; height:number; active:boolean; inHand:boolean; marginLeft:number;
+}
+export default function PlayerHand({cards,selectedCards,groups,lockedSetForCard,onUnlockSet,onLockGroup,
+  onSelectCard,onSelectGroup,disabled,sortMode,onSortChange,onReorder,onCardDragStart,onCardDragEnd,onTouchDrop}:Props) {
+  const containerRef=useRef<HTMLDivElement>(null);
+  const gesture=useRef<Gesture|null>(null);
+  const suppressClick=useRef(false);
+  const frame=useRef<number|null>(null);
+  const [preview,setPreview]=useState<Gesture|null>(null);
+  const [destination,setDestination]=useState<number|null>(null);
+  const lockedSets=cards.map(c=>lockedSetForCard?.(c.id)).filter((s):s is string[]=>!!s);
+  const baseLayout=handLayout(cards,lockedSets,groups);
+  const projectedIds=preview?.active && destination!==null ? moveBlock(cards.map(c=>c.id),preview.block,destination) : cards.map(c=>c.id);
+  const byId=new Map(cards.map(c=>[c.id,c]));
+  const projected=projectedIds.map(id=>byId.get(id)).filter((c):c is GameCard=>!!c);
+  const layout=preview?.active ? handLayout(projected,lockedSets) : baseLayout;
+  const insertionAt=(x:number)=>{
+    const element=containerRef.current!, rect=element.getBoundingClientRect();
+    const current=gesture.current!;
+    const track=element.querySelector<HTMLElement>('.hand-track')!;
+    return insertionFromOffsets(x-track.getBoundingClientRect().left,current.offsets,current.width);
+  };
+  const clearGesture=()=>{
+    if(frame.current!==null) cancelAnimationFrame(frame.current);
+    frame.current=null; gesture.current=null; setPreview(null); setDestination(null); onCardDragEnd?.();
+  };
+  const cancelRef=useRef(clearGesture);
+  useEffect(()=>{cancelRef.current=clearGesture;});
+  useEffect(()=>{
+    const cancel=(event:KeyboardEvent)=>{if(event.key==='Escape') cancelRef.current();};
+    window.addEventListener('keydown',cancel);
+    const blur=()=>cancelRef.current();window.addEventListener('blur',blur);window.addEventListener('resize',blur);
+    return ()=>{if(frame.current!==null) cancelAnimationFrame(frame.current);window.removeEventListener('keydown',cancel);window.removeEventListener('blur',blur);window.removeEventListener('resize',blur);};
+  },[]);
+  const select=(id:string)=>{
+    if(disabled) return;
+    const locked=lockedSetForCard?.(id);
+    if(locked) onSelectGroup(locked); else onSelectCard(id);
+  };
+  const pointerDown=(event:ReactPointerEvent<HTMLDivElement>,card:GameCard)=>{
+    if(event.button!==0 || gesture.current) return;
+    suppressClick.current=false;
+    const rect=event.currentTarget.getBoundingClientRect();
+    const container=containerRef.current!,track=container.querySelector<HTMLElement>('.hand-track')!;
+    const marginLeft=track.getBoundingClientRect().left-container.getBoundingClientRect().left+container.scrollLeft-parseFloat(getComputedStyle(container).paddingLeft);
+    gesture.current={pointerId:event.pointerId,cardId:card.id,block:getDragBlock(card.id,lockedSetForCard?.(card.id)??null),
+      original:cards.map(c=>c.id),offsets:baseLayout.offsets,marginLeft,x:event.clientX,y:event.clientY,startX:event.clientX,startY:event.clientY,
+      offsetX:event.clientX-rect.left,offsetY:event.clientY-rect.top,width:rect.width,
+      height:event.currentTarget.querySelector('.card')!.getBoundingClientRect().height,active:false,inHand:true};
+    event.currentTarget.setPointerCapture(event.pointerId);
+  };
+  const autoScroll=()=>{
+    const current=gesture.current,element=containerRef.current;
+    if(!current?.active||!element)return;
+    const rect=element.getBoundingClientRect();
+    if(current.y>=rect.top&&current.y<=rect.bottom){
+      const speed=current.x<rect.left+28?-10:current.x>rect.right-28?10:0;
+      if(speed){element.scrollLeft+=speed;setDestination(insertionAt(current.x));}
     }
-    setDragBlock(null);
-    setOverIdx(null);
-    isInternalRef.current = false;
-    onCardDragEnd?.();
-  }, [dragBlock, overIdx, onReorder, onCardDragEnd]);
-  // ── Touch ──
-  const touchStartRef = useRef<{ block: string[] } | null>(null);
-  const handleTouchStart = useCallback((index: number) => {
-    const block = blockForIndex(index);
-    touchStartRef.current = { block };
-    setDragBlock(block);
-  }, [blockForIndex]);
-  const handleTouchMove = useCallback((e: React.TouchEvent) => {
-    if (!touchStartRef.current || !containerRef.current) return;
-    const touch = e.touches[0];
-    const items = containerRef.current.querySelectorAll('[data-ci]');
-    let target = 0;
-    items.forEach(el => {
-      const rect = el.getBoundingClientRect();
-      const i = parseInt(el.getAttribute('data-ci') || '0');
-      if (touch.clientX > rect.left + rect.width / 2) target = i + 1;
-    });
-    setOverIdx(target);
-  }, []);
-  const handleTouchEnd = useCallback(() => {
-    if (touchStartRef.current && dragBlock && overIdx !== null) {
-      onReorder(dragBlock, overIdx);
+    frame.current=requestAnimationFrame(autoScroll);
+  };
+  const pointerMove=(event:ReactPointerEvent<HTMLDivElement>)=>{
+    const current=gesture.current;
+    if(!current||current.pointerId!==event.pointerId)return;
+    current.x=event.clientX;current.y=event.clientY;
+    const bounds=containerRef.current!.getBoundingClientRect();
+    current.inHand=current.x>=bounds.left&&current.x<=bounds.right&&current.y>=bounds.top&&current.y<=bounds.bottom;
+    if(!current.active&&Math.hypot(current.x-current.startX,current.y-current.startY)<5)return;
+    event.preventDefault();
+    if(!current.active){current.active=true;suppressClick.current=true;onCardDragStart?.(current.cardId);frame.current=requestAnimationFrame(autoScroll);}
+    setPreview({...current});setDestination(insertionAt(current.x));
+  };
+  const pointerUp=(event:ReactPointerEvent<HTMLDivElement>,cancelled=false)=>{
+    const current=gesture.current;
+    if(!current||current.pointerId!==event.pointerId)return;
+    // A changing hand (draw, reset...) invalidates the geometry captured at pickup.
+    const unchanged=current.original.join('|')===cards.map(c=>c.id).join('|');
+    if(current.active&&!cancelled&&unchanged){
+      const rect=containerRef.current!.getBoundingClientRect();
+      const inside=event.clientX>=rect.left&&event.clientX<=rect.right&&event.clientY>=rect.top&&event.clientY<=rect.bottom;
+      if(inside)onReorder(current.block,insertionAt(event.clientX));
+      else if(!disabled&&current.block.length===1)onTouchDrop?.(current.cardId,event.clientX,event.clientY);
     }
-    touchStartRef.current = null;
-    setDragBlock(null);
-    setOverIdx(null);
-  }, [dragBlock, overIdx, onReorder]);
-  const draggingSet = new Set(dragBlock ?? []);
-  return (
-    <div className="flex flex-col">
-      {/* Sort bar */}
-      <div className="flex gap-1 px-2 py-1 bg-slate-900/30 border-b border-slate-700/50 items-center overflow-x-auto">
-        <span className="text-[10px] text-slate-500 mr-1">TRIER:</span>
-        {(['suit', 'rank'] as const).map(m => (
-          <button key={m} onClick={() => onSortChange(m)}
-            className={`px-2 py-0.5 rounded text-[10px] font-bold whitespace-nowrap ${sortMode === m ? 'bg-amber-500 text-white' : 'bg-slate-700 text-slate-300'}`}>
-            {m === 'suit' ? '♠♥♦♣ Couleur' : 'A→2 Valeur'}
-          </button>
-        ))}
-        {sortMode === 'manual' && <span className="text-[10px] text-amber-400 ml-1">Manuel</span>}
-        {groups.length > 0 && (
-          <span className="text-[10px] text-green-400 ml-auto whitespace-nowrap">
-            {groups.length} combinaison{groups.length > 1 ? 's' : ''} détectée{groups.length > 1 ? 's' : ''}
-          </span>
-        )}
-      </div>
-      {/* Cards with group bands */}
-      <div ref={containerRef}
-        className="relative flex px-2 pt-2 pb-7 overflow-x-auto"
-        style={{ gap: GAP, minHeight: 134 }}
-        onTouchMove={handleTouchMove} onTouchEnd={handleTouchEnd}>
-        {cards.map((card, index) => {
-          // Auto-detected combo (visual hint only, non-interactive).
-          const group = findGroupForIndex(groups, index);
-          const isFirstOfGroup = group?.startIndex === index;
-          const isLastOfGroup = group?.endIndex === index;
-          const color = group ? GROUP_COLORS[group.colorIndex] : null;
-          // User-locked set membership.
-          const set = lockedSet(card.id);
-          const prevSet = index > 0 ? lockedSet(cards[index - 1].id) : null;
-          const nextSet = index < cards.length - 1 ? lockedSet(cards[index + 1].id) : null;
-          const sameSet = (a: string[] | null, b: string[] | null) => !!a && !!b && a === b;
-          const isFirstOfSet = !!set && !sameSet(set, prevSet);
-          const isLastOfSet = !!set && !sameSet(set, nextSet);
-          const isDragging = draggingSet.has(card.id);
-          const isOver = overIdx === index && !isDragging;
-          return (
-            <div key={card.id} data-ci={index} draggable
-              onDragStart={(e) => handleDragStart(e, index)}
-              onDragOver={(e) => handleDragOver(e, index)}
-              onDragEnd={handleDragEnd}
-              onTouchStart={() => handleTouchStart(index)}
-              className={`relative flex-shrink-0 transition-transform duration-100 ${isDragging ? 'scale-90 opacity-50' : ''} ${isOver ? 'translate-x-3' : ''}`}
-              style={{
-                // Tighten spacing inside a locked set so it reads as one block.
-                marginLeft: set && !isFirstOfSet ? -GAP + 1 : 0,
-                marginRight: 0,
-              }}>
-              {/* Auto-detected combo band (guide only) */}
-              {group && color && !set && (
-                <>
-                  <div className="absolute pointer-events-none"
-                    style={{
-                      left: isFirstOfGroup ? -3 : 0, right: isLastOfGroup ? -3 : 0,
-                      bottom: -8, height: 5, background: color.band,
-                      borderTopLeftRadius: isFirstOfGroup ? 3 : 0, borderBottomLeftRadius: isFirstOfGroup ? 3 : 0,
-                      borderTopRightRadius: isLastOfGroup ? 3 : 0, borderBottomRightRadius: isLastOfGroup ? 3 : 0,
-                      zIndex: 0,
-                    }} />
-                  {isFirstOfGroup && (
-                    <div className="absolute pointer-events-none text-[8px] font-black px-1 rounded"
-                      style={{ top: -12, left: -2, color: color.band, background: 'rgba(0,0,0,0.6)', zIndex: 3 }}>
-                      {group.type === 'tierce' ? 'TIERCE' : group.cardIds.length === 4 ? 'CARRÉ' : 'BRELAN'}
-                    </div>
-                  )}
-                  {/* Lock chevron under the detected combo — locks the WHOLE combo */}
-                  {isLastOfGroup && group.cardIds.length >= 2 && (
-                    <button
-                      onClick={(e) => { e.stopPropagation(); onLockGroup?.(group.cardIds); }}
-                      onPointerDown={(e) => e.stopPropagation()}
-                      draggable={false}
-                      title="Verrouiller cette combinaison"
-                      className="absolute z-20 flex items-center justify-center rounded-full shadow-md transition-transform active:scale-90 hover:scale-110"
-                      style={{ bottom: -22, right: -6, width: 22, height: 22, background: 'rgba(15,23,42,0.9)', border: `2px solid ${color.band}` }}>
-                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" style={{ color: color.band }}>
-                        <path d="M6 9l6 6 6-6" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" />
-                      </svg>
-                    </button>
-                  )}
-                </>
-              )}
-              {/* User LOCKED SET highlight (amber) */}
-              {set && (
-                <>
-                  <div className="absolute pointer-events-none"
-                    style={{
-                      left: isFirstOfSet ? -3 : 0, right: isLastOfSet ? -3 : 0,
-                      top: -3, bottom: -3, background: 'rgba(245,158,11,0.28)',
-                      borderTopLeftRadius: isFirstOfSet ? 10 : 0, borderBottomLeftRadius: isFirstOfSet ? 10 : 0,
-                      borderTopRightRadius: isLastOfSet ? 10 : 0, borderBottomRightRadius: isLastOfSet ? 10 : 0,
-                      boxShadow: 'inset 0 0 0 2px #f59e0b', zIndex: 0,
-                    }} />
-                  {isFirstOfSet && (
-                    <div className="absolute pointer-events-none text-[8px] font-black px-1 rounded flex items-center gap-0.5"
-                      style={{ top: -12, left: -2, color: '#0f172a', background: '#f59e0b', zIndex: 3 }}>
-                      🔒 VERROUILLÉ
-                    </div>
-                  )}
-                </>
-              )}
-              {/* Unlock chevron under the LAST card of a locked set */}
-              {set && isLastOfSet && (
-                <button
-                  onClick={(e) => { e.stopPropagation(); onUnlockSet?.(card.id); }}
-                  onPointerDown={(e) => e.stopPropagation()}
-                  draggable={false}
-                  title="Déverrouiller ces cartes"
-                  className="absolute z-20 flex items-center justify-center rounded-full shadow-md transition-transform active:scale-90 hover:scale-110"
-                  style={{ bottom: -22, right: -6, width: 22, height: 22, background: '#f59e0b', border: '2px solid #f59e0b' }}>
-                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" style={{ color: '#0f172a' }}>
-                    <path d="M6 15l6-6 6 6" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" />
-                  </svg>
-                </button>
-              )}
-              <div style={{ position: 'relative', zIndex: 1 }}>
-                <CardView card={card}
-                  selected={selectedCards.includes(card.id)}
-                  onClick={() => handleClick(index)}
-                  disabled={disabled} />
-              </div>
+    clearGesture();
+  };
+  return <div className="hand-layout flex flex-col">
+    <div className="hand-sortbar flex gap-1 px-2 py-1 bg-slate-900/30 border-b border-slate-700/50 items-center overflow-x-auto">
+      <span className="text-[10px] text-slate-500 mr-1">TRIER:</span>
+      {(['suit','rank'] as const).map(mode=><button key={mode} onClick={()=>onSortChange(mode)} className={`px-2 py-0.5 rounded text-[10px] font-bold whitespace-nowrap ${sortMode===mode?'bg-amber-500 text-white':'bg-slate-700 text-slate-300'}`}>{mode==='suit'?'♠♥♦♣ Couleur':'🃏 A→K Valeur'}</button>)}
+      {sortMode==='manual'&&<span className="text-[10px] text-amber-400 ml-1">Manuel</span>}
+      {groups.length>0&&<span className="text-[10px] text-green-400 ml-auto whitespace-nowrap">{groups.length} combinaison{groups.length>1?'s':''} détectée{groups.length>1?'s':''}</span>}
+    </div>
+    <div ref={containerRef} className="hand-fan relative"
+      onPointerDownCapture={()=>{if(!gesture.current)suppressClick.current=false;}}
+      onClickCapture={event=>{if(suppressClick.current&&event.detail!==0){event.stopPropagation();event.preventDefault();suppressClick.current=false;}}}
+      onDragStart={event=>event.preventDefault()}>
+      <div className="hand-track" style={{width:`calc(var(--card-width) * ${Math.max(baseLayout.width,layout.width)})`,...(preview?.active?{marginLeft:preview.marginLeft,marginRight:0}:{})}}>
+        {cards.map(card=>{
+          const index=projectedIds.indexOf(card.id);
+          const segment=layout.segments.find(g=>index>=g.start&&index<=g.end);
+          const groupColor=segment?GROUP_COLORS[segment.colorIndex%GROUP_COLORS.length].band:undefined;
+          const moving=!!preview?.active&&preview.block.includes(card.id);
+          const hidden=moving&&!preview?.inHand;
+          return <div key={card.id} data-card-id={card.id} data-ci={index} data-locked={!!lockedSetForCard?.(card.id)} data-hand-inserted={moving&&preview?.inHand ? true : undefined}
+            className="hand-slot" style={{left:`calc(var(--card-width) * ${layout.offsets[index]??0})`,zIndex:index+1}}
+            onPointerDown={event=>pointerDown(event,card)} onPointerMove={pointerMove} onPointerUp={event=>pointerUp(event)}
+            onPointerCancel={event=>pointerUp(event,true)} onLostPointerCapture={()=>{if(gesture.current)clearGesture();}}
+            onClick={()=>select(card.id)}>
+            <div style={{visibility:hidden?'hidden':'visible'}}>
+              <CardView card={card} groupColor={groupColor} selected={!moving&&selectedCards.includes(card.id)} disabled={disabled} onClick={()=>select(card.id)} stopPropagationOnClick />
             </div>
-          );
+          </div>;
         })}
-        {/* End drop zone */}
-        <div data-ci={cards.length}
-          onDragOver={(e) => handleDragOver(e, cards.length)}
-          className="flex-shrink-0"
-          style={{ width: 24 }} />
+        {layout.segments.map(segment=>{
+          const left=layout.offsets[segment.start];
+          const nextGroup=layout.segments.find(g=>g.start>segment.end);
+          // Shared card edges may overlap, but the controls below them must not.
+          const right=Math.min(layout.offsets[segment.end]+1,nextGroup?layout.offsets[nextGroup.start]:Infinity);
+          const width=right-left;
+          const color=GROUP_COLORS[segment.colorIndex%GROUP_COLORS.length].band;
+          return <div key={segment.ids.join('|')} data-hand-group={segment.ids.join('|')} className="hand-group"
+            style={{left:`calc(var(--card-width) * ${left})`,width:`calc(var(--card-width) * ${width})`}}>
+            <button type="button" data-group-select title="Sélectionner cette combinaison" aria-label="Sélectionner cette combinaison"
+              disabled={disabled||!!preview} onClick={()=>onSelectGroup(segment.ids)} style={{color}} className="hand-group-select">Sélectionner</button>
+            <button type="button" title={segment.locked?'Déverrouiller ces cartes':'Verrouiller cette combinaison'}
+              onClick={()=>segment.locked?onUnlockSet?.(segment.ids[0]):onLockGroup?.(segment.ids)}
+              className="hand-lock-control" style={{left:`calc(var(--card-width) * ${(layout.offsets[segment.end]-left+1)/2})`}} disabled={!!preview}>
+              {segment.locked?<svg aria-label="Groupe verrouillé" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="5" y="10" width="14" height="11" rx="2"/><path d="M8 10V6a4 4 0 0 1 8 0v4"/></svg>:<span aria-hidden="true">⌄</span>}
+            </button>
+          </div>;
+        })}
       </div>
     </div>
-  );
+    {preview&&!preview.inHand&&createPortal(<div data-hand-drag-preview aria-hidden="true" style={{position:'fixed',left:preview.x-preview.offsetX,top:preview.y-preview.offsetY,zIndex:2147483647,pointerEvents:'none',display:'flex',gap:4,'--card-width':`${preview.width}px`,'--card-height':`${preview.height}px`} as CSSProperties}>
+      {preview.block.map(id=>byId.get(id)).filter((c):c is GameCard=>!!c).map(card=><CardView key={card.id} card={card} groupColor={(()=>{const i=projectedIds.indexOf(card.id);const g=layout.segments.find(s=>i>=s.start&&i<=s.end);return g?GROUP_COLORS[g.colorIndex%GROUP_COLORS.length].band:undefined;})()}/>)}
+    </div>,document.body)}
+  </div>;
 }
