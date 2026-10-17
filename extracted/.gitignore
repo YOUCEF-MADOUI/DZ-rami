@@ -26,3 +26,6 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# Authoritative multiplayer runtime state (never commit secrets or hands)
+.multiplayer/

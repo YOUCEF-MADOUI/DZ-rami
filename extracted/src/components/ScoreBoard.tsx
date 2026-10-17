@@ -1,10 +1,10 @@
 'use client';
 
-import { GameState } from '@/game/core/types';
+import { ScoreState, scoreEntries, winnerScoreId } from '@/game/core/team-rules';
 
 interface Props {
   onBack: () => void;
-  gameState?: GameState | null;
+  gameState?: ScoreState | null;
 }
 
 export default function ScoreBoard({ onBack, gameState }: Props) {
@@ -23,7 +23,7 @@ export default function ScoreBoard({ onBack, gameState }: Props) {
     );
   }
 
-  const players = gameState.players;
+  const players = scoreEntries(gameState);
   const rounds = gameState.roundResults;
 
   return (
@@ -51,19 +51,27 @@ export default function ScoreBoard({ onBack, gameState }: Props) {
                   <td className="font-bold text-slate-300">R{i + 1}</td>
                   {players.map(p => {
                     const score = round.scores[p.id] ?? 0;
-                    const isWinner = round.winnerId === p.id;
+                    const isWinner = winnerScoreId(gameState,round) === p.id;
+                    const cleanWin = isWinner && score === 0;
+                    const breakdown = round.scoreBreakdown?.[p.id] ?? [];
                     return (
                       <td
                         key={p.id}
+                        title={breakdown.map(item => `+${item.points} — ${item.label}`).join(' · ')}
                         className={`${
-                          isWinner
+                          cleanWin
                             ? 'text-green-400 font-bold'
                             : score >= 100
                               ? 'text-red-400'
                               : 'text-slate-300'
                         }`}
                       >
-                        {isWinner ? (round.endType === 'RJ' ? 'RJ' : 'RS') : score}
+                        <div>{cleanWin ? (round.endType === 'RJ' ? 'RJ' : 'RS') : score}</div>
+                        {breakdown.map((item, itemIndex) => (
+                          <small key={itemIndex} className="block max-w-40 text-left text-[9px] leading-tight text-slate-400">
+                            +{item.points} — {item.label}
+                          </small>
+                        ))}
                       </td>
                     );
                   })}

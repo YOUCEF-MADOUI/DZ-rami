@@ -6,8 +6,17 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint .",
+    "test:ai-comparison": "tsx src/game/tests/ai-comparison-tests.ts",
     "typecheck": "tsc --noEmit",
-    "test": "tsx src/game/tests/hand-groups-tests.ts"
+    "test": "npm run test:vitest && tsx src/game/tests/hand-groups-tests.ts && tsx src/game/tests/engine-rule-tests.ts && tsx src/game/tests/p0-audit-tests.ts && tsx src/game/tests/joker-hard-tests.ts && tsx src/game/tests/solo-settings-tests.ts && tsx src/game/tests/team-tests.ts && tsx src/game/tests/public-view-tests.ts && tsx src/game/tests/ui-smoke-tests.mts && tsx src/game/tests/online-form-tests.ts && tsx src/game/tests/online-seat-tests.ts && tsx src/game/tests/online-session-tests.ts && tsx src/game/tests/online-rules-tests.ts && tsx src/game/tests/online-tests.ts && tsx src/game/tests/ai-simulation-tests.ts",
+    "test:online": "tsx src/game/tests/online-tests.ts",
+    "test:online-form": "tsx src/game/tests/online-form-tests.ts",
+    "test:online-session": "tsx src/game/tests/online-session-tests.ts",
+    "test:online-rules": "tsx src/game/tests/online-rules-tests.ts",
+    "test:online-rules-browser": "echo \"Utilisez scripts/test-online-rules-browser.cjs avec NODE_PATH vers les outils navigateur\"",
+    "test:online-ui-parity": "echo \"Lancez scripts/test-online-ui-parity.cjs avec NODE_PATH vers les outils navigateur\"",
+    "test:online-seat": "tsx src/game/tests/online-seat-tests.ts",
+    "test:vitest": "vitest run"
   },
   "dependencies": {
     "dotenv": "17.3.1",
@@ -19,6 +28,7 @@
   },
   "devDependencies": {
     "@tailwindcss/postcss": "4.1.17",
+    "@types/jsdom": "^30.0.0",
     "@types/node": "22.19.15",
     "@types/pg": "8.18.0",
     "@types/react": "19.2.14",
@@ -26,9 +36,11 @@
     "drizzle-kit": "0.31.10",
     "eslint": "9.39.4",
     "eslint-config-next": "16.2.6",
+    "jsdom": "^30.1.2",
     "postcss": "8.5.8",
     "tailwindcss": "4.1.17",
     "tsx": "^4.23.12",
-    "typescript": "5.9.3"
+    "typescript": "5.9.3",
+    "vitest": "3.2.4"
   }
 }

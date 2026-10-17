@@ -29,6 +29,9 @@ export function detectHandGroups(orderedHand: GameCard[]): DetectedGroup[] {
     const maxLen = Math.min(MAX_GROUP_SIZE, orderedHand.length - i);
     for (let len = maxLen; len >= MIN_GROUP_SIZE; len--) {
       const slice = orderedHand.slice(i, i + len);
+      // Automatic hints are natural-only. A Joker remains a free card until the
+      // player explicitly includes it in a manual combination selection.
+      if (slice.some(card => card.isJoker)) continue;
       const type = detectCombinationType(slice);
       if (type) {
         // A carré can never exceed 4 cards
@@ -57,6 +60,10 @@ export function findGroupForCard(groups: DetectedGroup[], cardId: string): Detec
 /** Find the group that contains a given hand index (or null) */
 export function findGroupForIndex(groups: DetectedGroup[], index: number): DetectedGroup | null {
   return groups.find(g => index >= g.startIndex && index <= g.endIndex) ?? null;
+}
+/** Auto-detection does not lock movement; only an explicit manual lock moves a block. */
+export function getDragBlock(cardId: string, lockedSet: string[] | null): string[] {
+  return lockedSet?.includes(cardId) ? lockedSet : [cardId];
 }
 /** Visual band colors, cycled per group */
 export const GROUP_COLORS = [

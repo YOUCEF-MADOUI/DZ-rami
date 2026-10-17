@@ -1,0 +1,50 @@
+{
+  "methodology": {
+    "seedsPerPlayerCount": 25,
+    "playerCounts": [
+      2,
+      3,
+      4,
+      5
+    ],
+    "turnCap": 800,
+    "options": "DEFAULT_CONFIG except aiDifficulty/playerCount",
+    "firstOpeningMean": "player turns, conditional on at least one opening",
+    "frequency": "opened seats / 350 eligible seats",
+    "integrity": "every intermediate engine transition audited"
+  },
+  "results": [
+    {
+      "difficulty": "normal",
+      "games": 100,
+      "seats": 350,
+      "legalOpenings": 98,
+      "openingFrequency": 0.28,
+      "gamesWithOpening": 70,
+      "meanTurnsToFirstOpening": 56.957142857142856,
+      "finished": 75,
+      "capped": 25,
+      "blocked": 0,
+      "ruleViolations": 0,
+      "turns": 29824,
+      "auditedStates": 60386,
+      "seconds": 6.165
+    },
+    {
+      "difficulty": "hard",
+      "games": 100,
+      "seats": 350,
+      "legalOpenings": 125,
+      "openingFrequency": 0.35714285714285715,
+      "gamesWithOpening": 77,
+      "meanTurnsToFirstOpening": 32.61038961038961,
+      "finished": 78,
+      "capped": 22,
+      "blocked": 0,
+      "ruleViolations": 0,
+      "turns": 22778,
+      "auditedStates": 46373,
+      "seconds": 144.298
+    }
+  ]
+}
