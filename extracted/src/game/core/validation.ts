@@ -3,10 +3,11 @@
 // Validates combinations, moves, first pose, etc.
 // =====================================================
 import {
-  GameCard, Card, Combination, CombinationType,
+  GameCard, Card, Combination, CombinationType, CombinationClass,
   Rank, Suit, RANK_ORDER, SUITS,
   getCardValue, getSetValue, GameState, Player, GameConfig,
   INITIAL_THRESHOLDS, Fault, FaultType,
+  JokerPlacement, SEAT_ORDER, getNextSeat, getPreviousSeat,
 } from './types';
 
 // ---- Card Utilities ----
@@ -31,6 +32,8 @@ export function getJokerCount(cards: GameCard[]): number {
  *
  * - carré/brelan: 3 or 4 cards of the same rank, different suits (max 1 joker)
  * - tierce: 3+ consecutive cards of the same suit (max 1 joker)
+ *
+ * This is the HAND preparation detector: it stays limited to 3-5 cards.
  */
 export function detectCombinationType(cards: GameCard[]): CombinationType | null {
   if (cards.length < 3 || cards.length > 5) return null;
@@ -54,9 +57,32 @@ export function detectCombinationType(cards: GameCard[]): CombinationType | null
   return null;
 }
 
-export function validateCombination(combo: Combination): { valid: boolean; error?: string } {
+/**
+ * Options for the strictness of a validation.
+ *
+ * `maxTierceLength` only applies while the meld is being PREPARED IN THE HAND
+ * (first placement poses are limited to 5 cards). Once a meld lives on the
+ * TABLE it may be extended to 6, 7, 8 cards and more.
+ */
+export interface CombinationValidationOptions {
+  maxTierceLength?: number;
+}
+
+export function validateCombination(
+  combo: Combination,
+  options: CombinationValidationOptions = {},
+): { valid: boolean; error?: string } {
   if (combo.cards.length < 3) {
     return { valid: false, error: 'Combination must have at least 3 cards' };
+  }
+  if (new Set(combo.cards.map(card => card.id)).size !== combo.cards.length) {
+    return { valid: false, error: 'A physical card cannot appear twice in one combination' };
+  }
+  if (options.maxTierceLength && combo.type === 'tierce' && combo.cards.length > options.maxTierceLength) {
+    return { valid: false, error: `A prepared tierce can have at most ${options.maxTierceLength} cards` };
+  }
+  if (combo.type === 'carre' && combo.cards.length > 4) {
+    return { valid: false, error: 'A carré can have at most 4 cards' };
   }
 
   const jokerCount = getJokerCount(combo.cards);
@@ -78,90 +104,72 @@ export function validateTierce(combo: Combination): { valid: boolean; error?: st
   const nonJokers = getNonJokerCards(cards);
   const jokerCount = getJokerCount(cards);
 
+  // No upper limit: a run already on the table can grow to 6, 7, 8 cards…
+  if (cards.length < 3) {
+    return { valid: false, error: 'A tierce must contain at least 3 cards' };
+  }
   if (jokerCount > 1) {
     return { valid: false, error: 'Tierce can have at most 1 joker' };
   }
 
-  // All non-joker cards must be same suit
+  // All non-joker cards must be same suit.
   const suits = new Set(nonJokers.map(c => c.suit));
   if (suits.size > 1) {
     return { valid: false, error: 'All cards in a tierce must be the same suit' };
   }
 
   const suit = nonJokers[0]?.suit;
-  if (!suit) {
+  if (!suit || nonJokers.length < 2) {
     return { valid: false, error: 'Tierce must have at least 2 non-joker cards' };
   }
 
-  // Check consecutive ranks
-  const rankPositions = nonJokers.map(c => RANK_ORDER[c.rank]);
-  
-  // Handle Ace being high (A-K-Q): Ace can be 1 or 14
-  // Try both interpretations
-  const result = validateConsecutiveWithJoker(cards, suit);
-  return result;
+  if (combo.jokerPlacement && !isExplicitPlacementValid(combo, combo.jokerPlacement)) {
+    return { valid: false, error: 'Explicit Joker placement does not match the run' };
+  }
+  return validateConsecutiveWithJoker(cards, suit);
 }
 
 function validateConsecutiveWithJoker(
   cards: GameCard[],
-  suit: Suit
+  _suit: Suit
 ): { valid: boolean; error?: string } {
   const jokerCount = getJokerCount(cards);
   const nonJokers = getNonJokerCards(cards);
-  
-  // Try to find a valid consecutive arrangement
-  // For each possible starting position, check if cards fit
-  
-  // Get rank positions, handling Ace as both 1 and 14
-  const rankPositionsLow = nonJokers.map(c => RANK_ORDER[c.rank]);
-  const rankPositionsHigh = nonJokers.map(c => c.rank === 'A' ? 14 : RANK_ORDER[c.rank]);
-  
-  // Try low Ace interpretation
-  if (tryConsecutive(rankPositionsLow, cards.length, jokerCount)) {
+  const lowPositions = nonJokers.map(c => RANK_ORDER[c.rank]);
+  const highPositions = nonJokers.map(c => c.rank === 'A' ? 14 : RANK_ORDER[c.rank]);
+
+  if (
+    tryConsecutive(lowPositions, cards.length, jokerCount) ||
+    tryConsecutive(highPositions, cards.length, jokerCount)
+  ) {
     return { valid: true };
   }
-  
-  // Try high Ace interpretation
-  if (tryConsecutive(rankPositionsHigh, cards.length, jokerCount)) {
-    return { valid: true };
-  }
-  
+
   return { valid: false, error: 'Cards are not consecutive' };
 }
 
 function tryConsecutive(positions: number[], totalCards: number, jokerCount: number): boolean {
+  if (positions.length === 0) return false;
   const sorted = [...positions].sort((a, b) => a - b);
-  
-  const minPos = sorted[0];
-  const maxPos = sorted[sorted.length - 1];
-
-  // Check for duplicates in positions
   const uniquePositions = new Set(sorted);
   if (uniquePositions.size !== sorted.length) return false;
 
-  // The real cards must fit inside a window of exactly `totalCards` consecutive
-  // positions. A joker may fill a gap anywhere in that window — including before
-  // the lowest card or after the highest one (e.g. A-K + joker => Q-K-A).
-  const span = maxPos - minPos + 1;
-  if (span > totalCards) return false; // real cards already too spread out
+  const minPos = sorted[0];
+  const maxPos = sorted[sorted.length - 1];
+  if (maxPos - minPos + 1 > totalCards) return false;
 
-  // Try every window of size `totalCards` that still contains all real cards.
+  // Try every valid interval that contains the natural cards. This deliberately
+  // allows the joker to precede the lowest card (Q-K-A with Joker=Q) or to follow
+  // the highest card, while keeping Ace-low and Ace-high runs non-wrapping.
   for (let start = maxPos - totalCards + 1; start <= minPos; start++) {
     const end = start + totalCards - 1;
-
-    // A can be 1 (low) or 14 (high) but sequences must not wrap past those bounds.
     if (start < 1 || end > 14) continue;
-
-    // Count how many positions in this window are NOT covered by a real card.
     let gaps = 0;
-    for (let i = start; i <= end; i++) {
-      if (!uniquePositions.has(i)) gaps++;
+    for (let position = start; position <= end; position++) {
+      if (!uniquePositions.has(position)) gaps++;
     }
-
-    // Those gaps must be exactly filled by the available jokers.
     if (gaps === jokerCount) return true;
   }
-
   return false;
 }
 
@@ -195,6 +203,186 @@ export function validateCarre(combo: Combination): { valid: boolean; error?: str
   }
 
   return { valid: true };
+}
+
+// ---- Combination classification (brelan vs carré) ----
+
+/**
+ * Exact class of a meld. A Joker never upgrades a brelan into a carré:
+ * `K + K + Joker` is a `brelan_avec_joker`, and `K + K + K + Joker` is a
+ * `brelan_avec_joker`, not a true carré.
+ */
+export function classifyCombination(combo: Combination): CombinationClass {
+  if (!validateCombination(combo).valid) return 'invalide';
+  const jokerCount = getJokerCount(combo.cards);
+  if (combo.type === 'tierce') {
+    return jokerCount > 0 ? 'tierce_avec_joker' : 'tierce_naturelle';
+  }
+  if (combo.cards.length >= 4) {
+    return jokerCount > 0 ? 'brelan_avec_joker' : 'carre_naturel';
+  }
+  return jokerCount > 0 ? 'brelan_avec_joker' : 'brelan_naturel';
+}
+
+/** A true carré: four natural cards of the same rank, no Joker at all. */
+export function isTrueCarre(combo: Combination): boolean {
+  return classifyCombination(combo) === 'carre_naturel';
+}
+
+/** A three-card set whose third card is a Joker. It is NOT a carré. */
+export function isBrelanWithJoker(combo: Combination): boolean {
+  return classifyCombination(combo) === 'brelan_avec_joker';
+}
+
+export function isBrelan(combo: Combination): boolean {
+  const kind = classifyCombination(combo);
+  return kind === 'brelan_naturel' || kind === 'brelan_avec_joker';
+}
+
+/** Human readable class, shared by the engine, the AI and the interface. */
+export function getCombinationClassLabel(combo: Combination): string {
+  switch (classifyCombination(combo)) {
+    case 'brelan_naturel': return 'Brelan';
+    case 'brelan_avec_joker': return 'Brelan + Joker';
+    case 'carre_naturel': return 'Carré';
+    case 'tierce_naturelle': return 'Tierce';
+    case 'tierce_avec_joker': return 'Tierce + Joker';
+    default: return 'Invalide';
+  }
+}
+
+// ---- Canonical order, orientation and logical insertion ----
+
+/** Orientation of a run: +1 ascending (8-9-10), -1 descending (10-9-8). */
+export function getTierceOrientation(combo: Combination): 1 | -1 {
+  const sequence = determineTierceSequence(combo);
+  if (!sequence || sequence.length < 2) return 1;
+  return sequence[1].position < sequence[0].position ? -1 : 1;
+}
+
+/** Keep the Joker metadata in sync with the physical index of the Joker. */
+function syncJokerPosition(combo: Combination, cards: GameCard[]): Combination {
+  const placement = combo.jokerPlacement;
+  if (!placement) return { ...combo, cards };
+  const index = cards.findIndex(card => card.id === placement.jokerId);
+  if (index < 0) return { ...combo, cards };
+  return {
+    ...combo,
+    cards,
+    jokerPlacement: { ...placement, position: index },
+    jokerPosition: index,
+    jokerRepresents: placement.represents,
+  };
+}
+
+/** Canonical suit order used for brelans/carrés. */
+const setOrder = (combo: Combination) => (card: GameCard): number => card.isJoker
+  ? SUITS.indexOf(combo.jokerPlacement?.represents.suit ?? 'spades')
+  : SUITS.indexOf(card.suit);
+
+/**
+ * CANONICAL ORDER of a combination.
+ *
+ * Natural cards are always ordered along the run (or by suit for a set). The
+ * Joker is never re-interpreted: it simply stays on the slot of the card it
+ * represents, so its chosen position survives any re-ordering.
+ */
+export function canonicalizeCombination(combo: Combination): Combination {
+  if (combo.cards.length < 2) return combo;
+
+  if (combo.type === 'carre') {
+    const cards = [...combo.cards].sort((a, b) => setOrder(combo)(a) - setOrder(combo)(b));
+    return syncJokerPosition(combo, cards);
+  }
+
+  const sequence = determineTierceSequence(combo);
+  if (!sequence || sequence.length !== combo.cards.length) return combo;
+  const step = sequence.length >= 2 && sequence[1].position < sequence[0].position ? -1 : 1;
+  const indexed = combo.cards.map((card, index) => ({ card, position: sequence[index].position }));
+  indexed.sort((a, b) => step * (a.position - b.position));
+  return syncJokerPosition(combo, indexed.map(item => item.card));
+}
+
+/**
+ * True when the Joker already placed in `before` still stands for exactly the
+ * same card in `after`. A Joker is never silently re-interpreted, even to make
+ * an extension legal.
+ */
+function keepsJokerRepresentation(before: Combination, after: Combination): boolean {
+  const previous = getStableJokerPlacement(before);
+  if (!previous) return true;
+  const next = getStableJokerPlacement(after);
+  return Boolean(
+    next &&
+    next.jokerId === previous.jokerId &&
+    next.represents.rank === previous.represents.rank &&
+    next.represents.suit === previous.represents.suit
+  );
+}
+
+/**
+ * Insert a card at its LOGICAL position inside an existing combination.
+ *
+ * A natural card is never placed where it was dropped: it takes its place in
+ * the run (`9-10-J-Q-K` + `8♥` → `8-9-10-J-Q-K`). The Joker is the only
+ * exception — it keeps the explicit placement chosen by the player, so it is
+ * appended and its represented card is derived from that slot.
+ *
+ * Returns null when the insertion would break the combination.
+ */
+export function insertCardAtLogicalPosition(
+  combo: Combination,
+  card: GameCard
+): Combination | null {
+  if (combo.cards.some(existing => existing.id === card.id)) return null;
+
+  if (card.isJoker) {
+    // A Joker keeps the slot it is given: its represented card is resolved
+    // from THAT slot, before any re-ordering, and it is never re-derived.
+    const cards = [...combo.cards, card];
+    const placement = resolveJokerPlacement(cards, combo.type);
+    if (!placement) return null;
+    const withPlacement = syncJokerPosition({ ...combo, jokerPlacement: placement }, cards);
+    const candidate = canonicalizeCombination(withPlacement);
+    return validateCombination(candidate).valid && keepsJokerRepresentation(combo, candidate)
+      ? candidate
+      : null;
+  }
+
+  if (combo.type === 'carre') {
+    const cards = [...combo.cards, card];
+    const candidate = canonicalizeCombination(syncJokerPosition(combo, cards));
+    return validateCombination(candidate).valid && keepsJokerRepresentation(combo, candidate)
+      ? candidate
+      : null;
+  }
+
+  // Tierce: try every sequence position the card can occupy (Ace low / high).
+  const sequence = determineTierceSequence(combo);
+  if (!sequence || sequence.length !== combo.cards.length) return null;
+  const step = sequence.length >= 2 && sequence[1].position < sequence[0].position ? -1 : 1;
+  const candidates = card.rank === 'A' ? [1, 14] : [RANK_ORDER[card.rank]];
+
+  for (const position of candidates) {
+    let index = combo.cards.length;
+    for (let i = 0; i < sequence.length; i++) {
+      if (step * (position - sequence[i].position) < 0) { index = i; break; }
+    }
+    const cards = [...combo.cards.slice(0, index), card, ...combo.cards.slice(index)];
+    const candidate = canonicalizeCombination(syncJokerPosition(combo, cards));
+    if (!validateCombination(candidate).valid) continue;
+    // A natural card may never silently re-interpret a positioned Joker:
+    // if the Joker would have to represent another card, the move is refused.
+    if (!keepsJokerRepresentation(combo, candidate)) continue;
+    // The card must really land on the slot its rank occupies in the run:
+    // this is what rejects an Ace placed at the wrong end (A high dropped
+    // before an ascending run, Ace low dropped after a descending one).
+    const finalSequence = determineTierceSequence(candidate);
+    const finalIndex = candidate.cards.findIndex(item => item.id === card.id);
+    if (!finalSequence || finalSequence[finalIndex]?.position !== position) continue;
+    return candidate;
+  }
+  return null;
 }
 
 // ---- Combination Value Calculation ----
@@ -243,7 +431,9 @@ function calculateTierceValue(combo: Combination): { total: number; vierge: numb
     }
   }
 
-  return { total, vierge };
+  // VIERGE is all-or-nothing: a tierce containing any Joker contributes zero,
+  // even though the total still counts the rank represented by that Joker.
+  return { total, vierge: getJokerCount(cards) > 0 ? 0 : vierge };
 }
 
 function calculateCarreValue(combo: Combination): { total: number; vierge: number } {
@@ -256,16 +446,15 @@ function calculateCarreValue(combo: Combination): { total: number; vierge: numbe
   const totalCount = combo.cards.length;
   
   if (rank === 'A') {
-    // Special values for Aces
-    if (totalCount === 3) return { total: 33, vierge: jokerCount > 0 ? 33 - 11 : 33 };
-    if (totalCount === 4) return { total: 44, vierge: jokerCount > 0 ? 44 - 11 : 44 };
+    // Special values for Aces. Any Joker makes the complete combination worth
+    // zero in VIERGE, not merely the Joker's own 11 points.
+    if (totalCount === 3) return { total: 33, vierge: jokerCount > 0 ? 0 : 33 };
+    if (totalCount === 4) return { total: 44, vierge: jokerCount > 0 ? 0 : 44 };
   }
   
   const cardValue = getCardValue(nonJokers[0], 'set');
   const total = cardValue * totalCount;
-  const vierge = cardValue * nonJokers.length;
-  
-  return { total, vierge };
+  return { total, vierge: jokerCount > 0 ? 0 : total };
 }
 
 export interface SequencePosition {
@@ -278,54 +467,73 @@ export function determineTierceSequence(combo: Combination): SequencePosition[] 
   const cards = combo.cards;
   const nonJokers = getNonJokerCards(cards);
   const jokerCount = getJokerCount(cards);
-  
   if (nonJokers.length === 0) return null;
 
-  // Try low Ace
-  const lowPositions = nonJokers.map(c => ({ pos: RANK_ORDER[c.rank], card: c as GameCard }));
-  const lowResult = buildSequence(lowPositions, jokerCount, cards.length);
-  if (lowResult) return lowResult;
-
-  // Try high Ace
-  const highPositions = nonJokers.map(c => ({ 
-    pos: c.rank === 'A' ? 14 : RANK_ORDER[c.rank], 
-    card: c as GameCard 
-  }));
-  const highResult = buildSequence(highPositions, jokerCount, cards.length);
-  if (highResult) return highResult;
-
-  return null;
-}
-
-function buildSequence(
-  positions: { pos: number; card: GameCard }[],
-  jokerCount: number,
-  totalCards: number
-): SequencePosition[] | null {
-  const sorted = [...positions].sort((a, b) => a.pos - b.pos);
-  const minPos = sorted[0].pos;
-  
-  const sequence: SequencePosition[] = [];
-  let jokersUsed = 0;
-  let cardIdx = 0;
-
-  for (let i = 0; i < totalCards; i++) {
-    const targetPos = minPos + i;
-    if (targetPos > 14) return null;
-    
-    if (cardIdx < sorted.length && sorted[cardIdx].pos === targetPos) {
-      sequence.push({ position: targetPos, isJoker: false, card: sorted[cardIdx].card });
-      cardIdx++;
-    } else if (jokersUsed < jokerCount) {
-      sequence.push({ position: targetPos, isJoker: true });
-      jokersUsed++;
-    } else {
-      return null;
-    }
+  // An explicit placement keeps the Joker exactly where the player put it:
+  // the sequence follows the physical order, it is never re-sorted.
+  const placement = combo.jokerPlacement;
+  if (placement && jokerCount > 0) {
+    const explicitSequence = buildExplicitSequence(cards, placement);
+    if (explicitSequence) return explicitSequence;
   }
 
-  if (cardIdx !== sorted.length || jokersUsed !== jokerCount) return null;
-  return sequence;
+  const lowResult = buildSequence(cards, card => RANK_ORDER[card.rank], cards.length);
+  if (lowResult) return lowResult;
+  return buildSequence(cards, card => (card.rank === 'A' ? 14 : RANK_ORDER[card.rank]), cards.length);
+}
+
+/**
+ * Build the tierce sequence for one Ace interpretation.
+ *
+ * The returned sequence follows the PHYSICAL order of `cards`, so
+ * `sequence[i]` always describes `cards[i]`. That is what lets the engine keep
+ * the orientation of a run and the explicit slot of a Joker.
+ */
+function buildSequence(
+  cards: GameCard[],
+  scaleOf: (card: Card) => number,
+  totalCards: number
+): SequencePosition[] | null {
+  const naturals = cards.filter((card): card is Card => !card.isJoker);
+  if (naturals.length === 0) return null;
+
+  const jokerCount = cards.length - naturals.length;
+  const naturalPositions = naturals.map(scaleOf);
+  const sorted = [...naturalPositions].sort((a, b) => a - b);
+  if (new Set(sorted).size !== sorted.length) return null;
+
+  const minPos = sorted[0];
+  const maxPos = sorted[sorted.length - 1];
+  if (maxPos - minPos + 1 > totalCards) return null;
+
+  for (let start = maxPos - totalCards + 1; start <= minPos; start++) {
+    const end = start + totalCards - 1;
+    if (start < 1 || end > 14) continue;
+
+    const used = new Set(naturalPositions);
+    const gaps: number[] = [];
+    for (let position = start; position <= end; position++) {
+      if (!used.has(position)) gaps.push(position);
+    }
+    if (gaps.length !== jokerCount) continue;
+
+    const byPosition = new Map<number, Card>();
+    for (const card of naturals) byPosition.set(scaleOf(card), card);
+
+    const sequence: SequencePosition[] = [];
+    let gapIndex = 0;
+    for (const card of cards) {
+      if (card.isJoker) {
+        sequence.push({ position: gaps[gapIndex++], isJoker: true });
+      } else {
+        const position = scaleOf(card);
+        if (!byPosition.has(position)) return null;
+        sequence.push({ position, isJoker: false, card });
+      }
+    }
+    return sequence;
+  }
+  return null;
 }
 
 function positionToRank(position: number): Rank {
@@ -337,46 +545,65 @@ function positionToRank(position: number): Rank {
 
 // ---- First Pose Validation ----
 
+/**
+ * Validate an opening pose.
+ *
+ * The NATURAL threshold is the VIERGE (71 / 91 / 101 / 111 according to the
+ * number of players). The SUITE is the required TOTAL threshold, never a natural threshold.
+ *
+ * A combination holding a Joker contributes 0 to the VIERGE but still counts
+ * in the TOTAL at the value of the card the Joker represents.
+ */
 export function validateFirstPose(
   combinations: Combination[],
-  suite: number,
-  initialThreshold: number,
-  playerHasJokerFromHand: boolean,
-  config: GameConfig
-): { valid: boolean; vierge: number; total: number; errors: string[] } {
+  viergeThreshold: number,
+  config: GameConfig,
+  suiteThreshold: number = viergeThreshold,
+): { valid: boolean; vierge: number; total: number; requiredThreshold: number; errors: string[] } {
   const errors: string[] = [];
+  if(!combinations.length)errors.push('At least one valid opening combination is required');
   
   let totalVierge = 0;
   let totalValue = 0;
+  const cardIds = new Set<string>();
 
   for (const combo of combinations) {
-    const validation = validateCombination(combo);
+    // An opening pose is prepared in the hand: a run is capped at 5 cards.
+    const validation = validateCombination(combo, { maxTierceLength: 5 });
     if (!validation.valid) {
       errors.push(validation.error || 'Invalid combination');
       continue;
     }
-    
+    for (const card of combo.cards) {
+      if (cardIds.has(card.id)) errors.push(`Card ${card.id} is used in more than one opening combination`);
+      cardIds.add(card.id);
+    }
+
     const value = calculateCombinationValue(combo);
     totalVierge += value.vierge;
     totalValue += value.total;
   }
 
-  // Determine required threshold
-  // If player has a joker from hand, they use initial threshold
-  const requiredSuite = playerHasJokerFromHand ? initialThreshold : suite;
-
-  // VIERGE must meet the SUITE
-  if (totalVierge < requiredSuite) {
-    errors.push(`VIERGE (${totalVierge}) must be >= SUITE (${requiredSuite})`);
+  if (config.tierceObligatoire) {
+    const hasNaturalTierce = combinations.some(combo =>
+      combo.type === 'tierce' &&
+      getJokerCount(combo.cards) === 0 &&
+      validateCombination(combo, { maxTierceLength: 5 }).valid
+    );
+    if (!hasNaturalTierce) {
+      errors.push('Opening requires at least one natural tierce in the VIERGE');
+    }
   }
 
-  // Check initial threshold for joker usage in first pose
-  const hasJokerInCombinations = combinations.some(c => getJokerCount(c.cards) > 0);
-  if (hasJokerInCombinations) {
-    // Must reach initial threshold in VIERGE first
-    if (totalVierge < initialThreshold) {
-      errors.push(`Must reach initial threshold (${initialThreshold}) in VIERGE before using jokers in first pose`);
-    }
+  // Natural points are compared only with VIERGE; TOTAL is compared with SUITE below.
+  const requiredThreshold = viergeThreshold;
+
+  if (totalVierge < requiredThreshold) {
+    errors.push(`VIERGE (${totalVierge}) must be >= VIERGE seuil (${requiredThreshold})`);
+  }
+
+  if (totalValue < suiteThreshold) {
+    errors.push(`TOTAL (${totalValue}) must be >= SUITE (${suiteThreshold})`);
   }
 
   // Check tierce max 5 cards when first placed
@@ -390,6 +617,7 @@ export function validateFirstPose(
     valid: errors.length === 0,
     vierge: totalVierge,
     total: totalValue,
+    requiredThreshold,
     errors,
   };
 }
@@ -400,69 +628,9 @@ export function canAddToCombination(
   combo: Combination,
   card: GameCard
 ): boolean {
-  if (combo.type === 'carre') {
-    return canAddToCarre(combo, card);
-  }
-  return canAddToTierce(combo, card);
-}
-
-function canAddToCarre(combo: Combination, card: GameCard): boolean {
-  if (combo.cards.length >= 4) return false;
-  
-  const nonJokers = getNonJokerCards(combo.cards);
-  if (nonJokers.length === 0) return false;
-  
-  if (card.isJoker) {
-    // Can add joker if no joker already present
-    return getJokerCount(combo.cards) === 0;
-  }
-  
-  // Must be same rank, different suit
-  const rank = nonJokers[0].rank;
-  if (card.rank !== rank) return false;
-  
-  const existingSuits = new Set(nonJokers.map(c => c.suit));
-  return !existingSuits.has(card.suit);
-}
-
-function canAddToTierce(combo: Combination, card: GameCard): boolean {
-  // No max length restriction after initial placement
-  const nonJokers = getNonJokerCards(combo.cards);
-  if (nonJokers.length === 0) return false;
-  
-  const suit = nonJokers[0].suit;
-  
-  if (card.isJoker) {
-    // Can add joker only if no joker already present
-    if (getJokerCount(combo.cards) > 0) return false;
-    // Joker can extend at either end
-    return true;
-  }
-  
-  // Must be same suit
-  if (card.suit !== suit) return false;
-  
-  // Must extend the sequence at either end
-  const sequence = determineTierceSequence(combo);
-  if (!sequence) return false;
-  
-  const positions = sequence.map(s => s.position);
-  const minPos = Math.min(...positions);
-  const maxPos = Math.max(...positions);
-  
-  const cardPos = RANK_ORDER[card.rank];
-  const cardPosHigh = card.rank === 'A' ? 14 : cardPos;
-  
-  // Can add at low end
-  if (cardPos === minPos - 1 && minPos - 1 >= 1) return true;
-  // Can add at high end
-  if (cardPos === maxPos + 1 && maxPos + 1 <= 13) return true;
-  // Ace high at the end
-  if (cardPosHigh === maxPos + 1 && maxPos + 1 <= 14) return true;
-  // Ace low at the start
-  if (card.rank === 'A' && minPos === 2) return true;
-  
-  return false;
+  if (card.isJoker && combo.type === 'tierce') return getJokerExtensionChoices(combo,card).some(c=>c.valid);
+  // The card is inserted at its logical place, never where it was dropped.
+  return insertCardAtLogicalPosition(combo, card) !== null;
 }
 
 // ---- Check if discard is playable (fault detection) ----
@@ -483,26 +651,217 @@ export function isCardPlayableOnTable(
 
 // ---- Joker Recovery Validation ----
 
-export function canRecoverJoker(
+export function getJokerRepresentation(combo: Combination): import('./types').JokerRepresentation | null {
+  const position = combo.cards.findIndex(card => card.isJoker);
+  if (position < 0) return null;
+  const naturals = getNonJokerCards(combo.cards);
+  const exact = combo.jokerPlacement?.represents ?? combo.jokerRepresents ?? determineJokerRepresentation(combo);
+  const candidates = combo.type === 'carre'
+    ? SUITS.filter(suit => !naturals.some(card => card.suit === suit))
+      .map(suit => ({ rank: naturals[0].rank, suit }))
+    : exact ? [exact] : [];
+  return { jokerId: combo.cards[position].id, position, combinationType: combo.type,
+    candidates, representation: candidates.length === 1 ? candidates[0] : null };
+}
+
+export function refreshJokerMetadata(combo: Combination): Combination {
+  const jokerRepresentation = getJokerRepresentation(combo);
+  if (combo.type !== 'carre') return { ...combo, jokerRepresentation: jokerRepresentation ?? undefined };
+  return { ...combo, jokerRepresentation: jokerRepresentation ?? undefined,
+    jokerRepresents: jokerRepresentation?.representation ?? undefined,
+    jokerPlacement: undefined, jokerPosition: jokerRepresentation?.position };
+}
+
+export function canRecoverJoker(combo: Combination, replacement: GameCard | GameCard[]): boolean {
+  const cards = Array.isArray(replacement) ? replacement : [replacement];
+  const metadata = getJokerRepresentation(combo);
+  if (!validateCombination(combo).valid || getJokerCount(combo.cards) !== 1 || !metadata) return false;
+  if (cards.length !== metadata.candidates.length || new Set(cards.map(c => c.id)).size !== cards.length) return false;
+  if (cards.some(c => c.isJoker || combo.cards.some(existing => existing.id === c.id))) return false;
+  return metadata.candidates.every(candidate => cards.some(c => !c.isJoker && c.rank === candidate.rank && c.suit === candidate.suit));
+}
+
+// ---- Explicit Joker placement ----
+
+/** Sequence positions a natural card may occupy (Ace is low OR high). */
+function rankPositions(rank: Rank): number[] {
+  return rank === 'A' ? [1, 14] : [RANK_ORDER[rank]];
+}
+
+/**
+ * Build the tierce sequence implied by an explicit Joker placement.
+ *
+ * The Joker sits at `placement.position` inside the physical `cards` array and
+ * stands for `placement.represents`. Both ascending (7-8-Joker→9) and
+ * descending (8-Joker-6, Joker=7) hand arrangements are supported, so the
+ * physical order chosen while preparing the meld is preserved verbatim.
+ */
+function buildExplicitSequence(
+  cards: GameCard[],
+  placement: JokerPlacement
+): SequencePosition[] | null {
+  const jokerIndex = cards.findIndex(card => card.id === placement.jokerId);
+  if (jokerIndex < 0 || jokerIndex !== placement.position) return null;
+
+  const naturalPositions: { index: number; rank: Rank }[] = [];
+  for (let index = 0; index < cards.length; index++) {
+    const card = cards[index];
+    if (card.isJoker) continue;
+    if (card.suit !== placement.represents.suit) return null;
+    naturalPositions.push({ index, rank: card.rank });
+  }
+  if (naturalPositions.length < 2) return null;
+
+  const jokerCandidates = rankPositions(placement.represents.rank);
+  for (const step of [1, -1] as const) {
+    for (const jokerSeqPos of jokerCandidates) {
+      const start = jokerSeqPos - step * placement.position;
+      let consistent = true;
+      for (const natural of naturalPositions) {
+        const expected = start + step * natural.index;
+        if (!rankPositions(natural.rank).includes(expected)) { consistent = false; break; }
+      }
+      if (!consistent) continue;
+
+      const positions = cards.map((_, index) => start + step * index);
+      if (positions.some(position => position < 1 || position > 14)) continue;
+      if (new Set(positions).size !== positions.length) continue;
+
+      return cards.map((card, index) => card.isJoker
+        ? { position: positions[index], isJoker: true }
+        : { position: positions[index], isJoker: false, card });
+    }
+  }
+  return null;
+}
+
+/** The placement recorded on a combination, when it still matches the physical cards. */
+export function getStableJokerPlacement(combo: Combination): JokerPlacement | null {
+  const placement = combo.jokerPlacement;
+  if (!placement) return null;
+  if (getJokerCount(combo.cards) === 0) return null;
+  const index = combo.cards.findIndex(card => card.id === placement.jokerId);
+  if (index < 0 || index !== placement.position) return null;
+  return isExplicitPlacementValid(combo, placement) ? placement : null;
+}
+
+/** Does the recorded placement describe a genuinely valid combination? */
+export function isExplicitPlacementValid(
   combo: Combination,
-  replacementCard: GameCard
+  placement: JokerPlacement
 ): boolean {
-  if (getJokerCount(combo.cards) === 0) return false;
-  if (replacementCard.isJoker) return false;
-  
-  // Find what the joker represents
-  if (!combo.jokerRepresents) return false;
-  
-  const card = replacementCard as Card;
-  return card.rank === combo.jokerRepresents.rank && 
-         card.suit === combo.jokerRepresents.suit;
+  if (combo.type === 'tierce') return buildExplicitSequence(combo.cards, placement) !== null;
+
+  const nonJokers = getNonJokerCards(combo.cards);
+  if (nonJokers.length === 0) return false;
+  if (nonJokers.some(card => card.rank !== placement.represents.rank)) return false;
+  const usedSuits = new Set(nonJokers.map(card => card.suit));
+  if (usedSuits.size !== nonJokers.length) return false;
+  return !usedSuits.has(placement.represents.suit);
+}
+
+/**
+ * Derive the Joker placement from the physical order of the cards, i.e. from
+ * the arrangement the player prepared in their hand.
+ *
+ * The Joker's own slot decides the card it represents: `7-8-Joker` → 9,
+ * `Joker-7-8` → 6, `8-Joker-6` → 7. Nothing is sorted and nothing is moved.
+ */
+export function resolveJokerPlacement(
+  cards: GameCard[],
+  type: CombinationType
+): JokerPlacement | null {
+  const jokerIndex = cards.findIndex(card => card.isJoker);
+  if (jokerIndex < 0) return null;
+  const joker = cards[jokerIndex];
+  if (!joker.isJoker) return null;
+  const naturals: { index: number; card: Card }[] = [];
+  cards.forEach((card, index) => {
+    if (!card.isJoker) naturals.push({ index, card });
+  });
+  if (naturals.length < 2) return null;
+
+  if (type === 'carre') {
+    const rank = naturals[0].card.rank;
+    if (naturals.some(natural => natural.card.rank !== rank)) return null;
+    const usedSuits = new Set(naturals.map(natural => natural.card.suit));
+    if (usedSuits.size !== naturals.length) return null;
+    if (SUITS.filter(suit => !usedSuits.has(suit)).length !== 1) return null;
+    const missingSuit = SUITS.find(suit => !usedSuits.has(suit));
+    if (!missingSuit) return null;
+    return { jokerId: joker.id, position: jokerIndex, represents: { rank, suit: missingSuit } };
+  }
+
+  const suit = naturals[0].card.suit;
+  if (naturals.some(natural => natural.card.suit !== suit)) return null;
+
+  for (const step of [1, -1] as const) {
+    const anchor = naturals[0];
+    for (const anchorPos of rankPositions(anchor.card.rank)) {
+      const start = anchorPos - step * anchor.index;
+      let consistent = true;
+      for (const natural of naturals) {
+        const expected = start + step * natural.index;
+        if (!rankPositions(natural.card.rank).includes(expected)) { consistent = false; break; }
+      }
+      if (!consistent) continue;
+      const jokerSeqPos = start + step * jokerIndex;
+      if (jokerSeqPos < 1 || jokerSeqPos > 14) continue;
+      return {
+        jokerId: joker.id,
+        position: jokerIndex,
+        represents: { rank: positionToRank(jokerSeqPos), suit },
+      };
+    }
+  }
+  return null;
+}
+
+/**
+ * Attach the explicit Joker placement of a meld (if it holds one), keeping the
+ * derived `jokerPosition` / `jokerRepresents` fields in sync.
+ */
+export function applyJokerPlacement(combo: Combination): Combination {
+  const placement = combo.jokerPlacement ?? resolveJokerPlacement(combo.cards, combo.type);
+  if (placement && isExplicitPlacementValid(combo, placement)) {
+    return {
+      ...combo,
+      jokerPlacement: placement,
+      jokerPosition: placement.position,
+      jokerRepresents: placement.represents,
+    };
+  }
+  if (getJokerCount(combo.cards) === 0) return combo;
+
+  // The prepared order is not a consistent run (e.g. 8-Joker-7). Fall back to
+  // the canonical order and freeze the representation the Joker takes there,
+  // so it still owns an explicit, stable placement and stays recoverable.
+  const canonical = canonicalizeCombination(combo);
+  const representation = determineJokerRepresentation(canonical);
+  const index = canonical.cards.findIndex(card => card.isJoker);
+  if (!representation || index < 0) return canonical;
+  const jokerId = canonical.cards[index].id;
+  return {
+    ...canonical,
+    jokerPlacement: { jokerId, position: index, represents: representation },
+    jokerPosition: index,
+    jokerRepresents: representation,
+  };
 }
 
 // ---- Determine Joker Representation ----
 
+/**
+ * What the Joker stands for. An explicit, still-valid placement always wins:
+ * auto-detection may never move or re-interpret a Joker that a player already
+ * positioned in a valid combination.
+ */
 export function determineJokerRepresentation(
   combo: Combination
 ): { rank: Rank; suit: Suit } | null {
+  const stable = getStableJokerPlacement(combo);
+  if (stable) return stable.represents;
+
   const sequence = determineTierceSequence(combo);
   if (combo.type === 'tierce' && sequence) {
     const jokerPos = sequence.find(s => s.isJoker);
@@ -521,6 +880,7 @@ export function determineJokerRepresentation(
     
     const rank = nonJokers[0].rank;
     const usedSuits = new Set(nonJokers.map(c => c.suit));
+    if (SUITS.filter(suit => !usedSuits.has(suit)).length !== 1) return null;
     const missingSuit = SUITS.find(s => !usedSuits.has(s));
     
     if (!missingSuit) return null;
@@ -530,16 +890,38 @@ export function determineJokerRepresentation(
   return null;
 }
 
-// ---- Next Player Index (Anti-clockwise) ----
+// ---- Aggregate opening values (shared by the engine and the UI display) ----
 
+/** VIERGE of a set of combinations: 0 for any combination holding a Joker. */
+export function calculateVierge(combos: Combination[]): number {
+  return combos.reduce((sum, combo) => sum + calculateCombinationValue(combo).vierge, 0);
+}
+
+/** VALEUR TOTALE of a set of combinations: Jokers count for the card they represent. */
+export function calculateTotal(combos: Combination[]): number {
+  return combos.reduce((sum, combo) => sum + calculateCombinationValue(combo).total, 0);
+}
+
+// ---- Turn order (driven by the seats around the table) ----
+
+/**
+ * Turn order is derived from the physical seats, never from a player id, a
+ * player number, an array index or a creation order. When no explicit seat is
+ * available we fall back to the canonical seat of that index, which is the
+ * very same rotation: SUD → EST → NORD-EST → NORD-OUEST → OUEST → SUD.
+ */
 export function getNextPlayerIndex(currentIndex: number, playerCount: number): number {
-  // Anti-clockwise: decreasing index with wrapping
-  return (currentIndex - 1 + playerCount) % playerCount;
+  const order = SEAT_ORDER[playerCount];
+  if (!order || order.length === 0) return (currentIndex + 1) % Math.max(playerCount, 1);
+  const currentSeat = order[currentIndex] ?? order[0];
+  return order.indexOf(getNextSeat(currentSeat, playerCount));
 }
 
 export function getPreviousPlayerIndex(currentIndex: number, playerCount: number): number {
-  // The player who played before (clockwise from current = the one current can chop)
-  return (currentIndex + 1) % playerCount;
+  const order = SEAT_ORDER[playerCount];
+  if (!order || order.length === 0) return (currentIndex - 1 + playerCount) % Math.max(playerCount, 1);
+  const currentSeat = order[currentIndex] ?? order[0];
+  return order.indexOf(getPreviousSeat(currentSeat, playerCount));
 }
 
 // ---- Create Fault ----
@@ -550,11 +932,17 @@ export function createFault(
   config: GameConfig,
   hasJokerOnly: boolean = false
 ): Fault {
-  const penalty = hasJokerOnly ? config.faulteJokerPenalty : config.faultePenalty;
+  const penalty = type === 'playable_discard'
+    ? config.playableDiscardPenalty
+    : type === 'carre_not_recovered'
+      ? config.carreNotRecoveredPenalty
+      : hasJokerOnly
+        ? config.faulteJokerPenalty
+        : config.faultePenalty;
   const descriptions: Record<FaultType, string> = {
     invalid_combination: 'Combinaison invalide',
     wrong_point_calculation: 'Mauvais calcul de points',
-    below_suite: 'Première pose sous la SUITE',
+    below_suite: 'TOTAL de l’ouverture sous la SUITE',
     insufficient_vierge: 'VIERGE finale insuffisante',
     forgot_discard: 'Oubli de défausse',
     illegal_joker_use: 'Utilisation interdite d\'un Joker',
@@ -571,4 +959,54 @@ export function createFault(
     penalty,
     description: descriptions[type],
   };
+}
+
+/** Natural runs display ascending; any Joker preserves the physical prepared order. */
+export function getCombinationDisplayCards(combo: Combination): GameCard[] {
+  if (combo.type !== 'tierce' || getJokerCount(combo.cards) > 0) return [...combo.cards];
+  const sequence = determineTierceSequence(combo);
+  if (!sequence) return [...combo.cards];
+  return [...sequence].sort((a, b) => a.position - b.position).map(item => item.card!);
+}
+
+/** HUD values share the engine's fixed VIERGE and latest committed opening total. */
+export function getOpeningHudValues(state: GameState, playerId: string) {
+  const draft = state.turnState?.playerId === playerId ? state.turnState.temporaryCombinations : [];
+  return { vierge: state.initialThreshold, suite: state.suite,
+    total: draft.length ? calculateTotal(draft) : state.lastOpeningTotal ?? 0,
+    isDraft: draft.length > 0 };
+}
+
+export type JokerExtensionSide = 'higher' | 'lower';
+export interface JokerExtensionChoice {
+  side: JokerExtensionSide;
+  rank: Rank | null;
+  suit?: Suit;
+  valid: boolean;
+  error?: string;
+  combination?: Combination;
+}
+/** Enumerate both legal ends without touching the source meld or the Joker. */
+export function getJokerExtensionChoices(combo: Combination, joker: GameCard): JokerExtensionChoice[] {
+  const sequence = determineTierceSequence(combo);
+  const naturals = getNonJokerCards(combo.cards);
+  const suit = naturals[0]?.suit;
+  const positions = sequence?.map(p => p.position) ?? [];
+  // Public natural runs are displayed descending. Freeze that order before adding the Joker.
+  const ordered = sequence ? [...sequence].sort((a,b)=>b.position-a.position).map(p=>p.card!) : combo.cards;
+  return (['higher', 'lower'] as const).map(side => {
+    const position = side === 'higher' ? Math.max(...positions) + 1 : Math.min(...positions) - 1;
+    const rank = position >= 1 && position <= 14 ? positionToRank(position) : null;
+    const base = {side, rank, suit, valid:false};
+    if (combo.type !== 'tierce' || !joker.isJoker || !validateCombination(combo).valid || !positions.length)
+      return {...base,error:'La combinaison ciblée ne permet pas cette extension.'};
+    if (getJokerCount(combo.cards)) return {...base,error:'Cette suite contient déjà un Joker.'};
+    if (!rank || combo.cards.length >= 13) return {...base,error:'Extension interdite à cette extrémité de la suite.'};
+    const cards = side === 'higher' ? [joker,...ordered] : [...ordered,joker];
+    const placement = resolveJokerPlacement(cards,'tierce');
+    if (!placement || placement.represents.rank !== rank) return {...base,error:'Orientation de l’As incompatible.'};
+    const candidate = applyJokerPlacement({...combo,cards,jokerPlacement:placement});
+    const validation = validateCombination(candidate);
+    return {...base, valid:validation.valid, error:validation.error, combination:validation.valid?candidate:undefined};
+  });
 }

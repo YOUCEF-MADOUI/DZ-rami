@@ -1,0 +1,18 @@
+{
+  "appId": "dz.rami.app",
+  "appName": "DZ-rami",
+  "webDir": "out",
+  "android": {
+    "allowMixedContent": false
+  },
+  "server": {
+    "androidScheme": "https"
+  },
+  "plugins": {
+    "SplashScreen": {
+      "backgroundColor": "#0f172a",
+      "showSpinner": false,
+      "launchAutoHide": true
+    }
+  }
+}

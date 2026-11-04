@@ -26,3 +26,20 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# Authoritative multiplayer runtime state (never commit secrets or hands)
+.multiplayer/
+
+# Android shell (Capacitor): only the generated platform folder is local.
+/android/app/build/
+/android/build/
+/android/.gradle/
+/android/local.properties
+/android/app/release/
+*.jks
+*.keystore
+# Temporary folder used by scripts/build-mobile.mjs
+.mobile-api-parked/
+# Signature Android : la clé et ses mots de passe ne sortent jamais du poste.
+android-assets/keystore.env
+android-assets/.render.py

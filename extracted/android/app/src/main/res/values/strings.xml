@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">DZ-rami</string>
+    <string name="title_activity_main">DZ-rami</string>
+    <string name="package_name">dz.rami.app</string>
+    <string name="custom_url_scheme">dz.rami.app</string>
+</resources>

@@ -1,3 +1,5 @@
+import { isDiscardPlayable, isTeamMode, teamOfPlayer } from '../core/team-rules';
+import { findHardPlan, futurePotential } from './hard-planner';
 // =====================================================
 // AI PLAYER - Decision Engine for Computer Players
 // =====================================================
@@ -7,20 +9,21 @@ import {
   getCardValue, INITIAL_THRESHOLDS,
 } from '../core/types';
 import {
-  validateCombination, calculateCombinationValue,
+  validateCombination, detectCombinationType,
   canAddToCombination, canRecoverJoker,
   getJokerCount, getNonJokerCards,
-  getNextPlayerIndex, getPreviousPlayerIndex,
   isCardPlayableOnTable, determineJokerRepresentation,
 } from '../core/validation';
 import {
   drawCard, chopCard, placeCombination,
   addToCombination, recoverJoker, discard,
-  getAvailableActions, canChop,
+  getAvailableActions, canChop, rejectChop, takeBackCombinations, validateOpening,
+  returnCarreToBase, hasPlayedMandatoryChopCard,
 } from '../core/engine';
 
 export interface AIDecision {
-  action: 'draw' | 'chop' | 'place' | 'add' | 'recover_joker' | 'discard';
+  jokerExtension?: import('../core/validation').JokerExtensionSide;
+  action: 'draw' | 'chop' | 'place' | 'add' | 'recover_joker' | 'return_carre' | 'discard';
   cardId?: string;
   cardIds?: string[];
   combinationId?: string;
@@ -67,27 +70,51 @@ function shouldChop(state: GameState, player: Player): boolean {
   const chopCardValue = state.discardPile[state.discardPile.length - 1];
   if (!chopCardValue) return false;
 
-  // If the card helps with combinations, chop it
-  const helpfulness = evaluateCardForHand(chopCardValue, player.hand, state);
-
-  // Consider the malus risk
-  const malusRisk = player.status === 'not_opened'
-    ? state.config.malusChopOuverture
-    : state.config.malusChopJoueurOuvert;
-
-  // If card is very useful (completes a combination), chop
-  if (helpfulness > 50) return true;
-
-  // If card is somewhat useful and malus is low, chop
-  if (helpfulness > 20 && malusRisk <= 10) return true;
-
-  // If player can open with this card, definitely chop
-  if (player.status === 'not_opened') {
+  if (state.config.chopSeulementOuverture && player.status === 'not_opened') {
     const testHand = [...player.hand, chopCardValue];
-    const combos = findBestCombinations(testHand, state);
-    if (combos.canOpen) return true;
+    if (!findBestCombinations(testHand, state).canOpen) return false;
   }
 
+  // Avoid taking a card under the independent "CHOP card must be played"
+  // setting unless a legal combination/addition can actually use it.
+  if (
+    state.config.chopCarteObligatoireAJouer &&
+    !canUseCardInCombination(state, player, chopCardValue)
+  ) return false;
+
+  const helpfulness = evaluateCardForHand(chopCardValue, player.hand, state);
+  const malusRisk = player.status === 'not_opened'
+    ? state.config.malusChopOuverture
+    : (state.config.malusChopJoueurOuvertActif ? state.config.malusChopJoueurOuvert : 0);
+  const difficulty = state.config.aiDifficulty ?? 'normal';
+  const usefulnessThreshold = difficulty === 'easy' ? 65 : difficulty === 'hard' ? 30 : 50;
+  const lowMalusThreshold = difficulty === 'easy' ? 0 : 10;
+
+  if (helpfulness >= usefulnessThreshold) return true;
+  if (helpfulness > 20 && malusRisk <= lowMalusThreshold) return true;
+  if (player.status === 'not_opened') {
+    return findBestCombinations([...player.hand, chopCardValue], state).canOpen;
+  }
+  return false;
+}
+
+function canUseCardInCombination(state: GameState, player: Player, target: GameCard): boolean {
+  const available = getAvailableActions(state);
+  if (available.possibleAdditions.some(action => action.cardId === target.id)) return true;
+
+  const others = player.hand.filter(card => card.id !== target.id);
+  const choose = (start: number, needed: number, picked: GameCard[]): boolean => {
+    if (needed === 0) return detectCombinationType([...picked, target]) !== null;
+    for (let i = start; i <= others.length - needed; i++) {
+      picked.push(others[i]);
+      if (choose(i + 1, needed - 1, picked)) return true;
+      picked.pop();
+    }
+    return false;
+  };
+  for (let size = 2; size <= Math.min(4, others.length); size++) {
+    if (choose(0, size, [])) return true;
+  }
   return false;
 }
 
@@ -118,11 +145,13 @@ function evaluateCardForHand(card: GameCard, hand: GameCard[], state: GameState)
 interface CombinationPlan {
   combos: { cards: GameCard[]; type: 'tierce' | 'carre' }[];
   canOpen: boolean;
-  vierge: number;
-  total: number;
 }
 
 function findBestCombinations(hand: GameCard[], state: GameState): CombinationPlan {
+  if(state.config.aiDifficulty==='hard'){
+    const plan=findHardPlan(hand,state);
+    if(plan)return plan;
+  }
   const nonJokers = getNonJokerCards(hand);
   const jokers = hand.filter(c => c.isJoker);
   const combos: { cards: GameCard[]; type: 'tierce' | 'carre' }[] = [];
@@ -220,51 +249,52 @@ function findBestCombinations(hand: GameCard[], state: GameState): CombinationPl
       }
     }
 
-    // Find 2-card sequences that could become tierces with a joker
-    for (const [suit, cards] of bySuit) {
+    // Test all natural-card pairs against the same validator used by the engine.
+    // This includes A-K-Joker, where the Joker represents Q in Q-K-A.
+    for (const [, cards] of bySuit) {
       if (jokerIdx >= jokers.length) break;
       const unused = cards.filter(c => !usedCardIds.has(c.id));
-      const sorted = [...unused].sort((a, b) => RANK_ORDER[a.rank] - RANK_ORDER[b.rank]);
-      
-      for (let i = 0; i < sorted.length - 1; i++) {
-        if (jokerIdx >= jokers.length) break;
-        const pos1 = RANK_ORDER[sorted[i].rank];
-        const pos2 = RANK_ORDER[sorted[i + 1].rank];
-        
-        if (pos2 - pos1 <= 2 && pos2 - pos1 >= 1) {
-          combos.push({ cards: [sorted[i], sorted[i + 1], jokers[jokerIdx]], type: 'tierce' });
-          usedCardIds.add(sorted[i].id);
-          usedCardIds.add(sorted[i + 1].id);
-          jokerIdx++;
+      let selectedPair: Card[] | null = null;
+      for (let i = 0; i < unused.length && !selectedPair; i++) {
+        for (let j = i + 1; j < unused.length; j++) {
+          const candidate = [unused[i], unused[j], jokers[jokerIdx]];
+          if (detectCombinationType(candidate) === 'tierce') {
+            selectedPair = [unused[i], unused[j]];
+            break;
+          }
         }
       }
+      if (selectedPair && jokerIdx < jokers.length) {
+        combos.push({ cards: [...selectedPair, jokers[jokerIdx]], type: 'tierce' });
+        selectedPair.forEach(card => usedCardIds.add(card.id));
+        jokerIdx++;
+      }
+      if (jokerIdx >= jokers.length) break;
     }
   }
 
-  // Calculate values
-  let vierge = 0;
-  let total = 0;
-
-  for (const combo of combos) {
-    const mockCombo: Combination = {
-      id: 'temp',
+  // Build the exact combination objects and use the engine's first-pose
+  // validator for threshold, Joker/Vierge and mandatory-tierce decisions.
+  const engineCombinations: Combination[] = combos.map((combo, index) => {
+    const result: Combination = {
+      id: `ai-plan-${index}`,
       type: combo.type,
       cards: combo.cards,
-      ownerId: 'temp',
+      ownerId: state.players[state.currentPlayerIndex].id,
     };
-    const rep = determineJokerRepresentation(mockCombo);
-    if (rep) mockCombo.jokerRepresents = rep;
-    
-    const val = calculateCombinationValue(mockCombo);
-    vierge += val.vierge;
-    total += val.total;
-  }
+    const representation = determineJokerRepresentation(result);
+    if (representation) result.jokerRepresents = representation;
+    return result;
+  });
+  const remainingHand = hand.filter(card => !usedCardIds.has(card.id));
+  const openingValidation = validateOpening(
+    state,
+    state.players[state.currentPlayerIndex].id,
+    engineCombinations,
+    remainingHand,
+  );
 
-  const player = state.players[state.currentPlayerIndex];
-  const requiredSuite = state.suite;
-  const canOpen = vierge >= requiredSuite;
-
-  return { combos, canOpen, vierge, total };
+  return { combos, canOpen: openingValidation.valid };
 }
 
 function planPlay(state: GameState, player: Player): AIDecision[] {
@@ -289,24 +319,22 @@ function planPlay(state: GameState, player: Player): AIDecision[] {
 
   // Player is already opened - try to play cards
   // Try to add cards to existing combinations
-  for (const addition of actions.possibleAdditions) {
+  const additions=isTeamMode(state.config)?[...actions.possibleAdditions].sort((a,b)=>{
+    const ownTeam=teamOfPlayer(state,player.id);
+    const owner=(id:string)=>state.tableCombinations.find(c=>c.id===id)?.ownerId;
+    return Number(teamOfPlayer(state,owner(b.combinationId)??'')===ownTeam)-Number(teamOfPlayer(state,owner(a.combinationId)??'')===ownTeam);
+  }):actions.possibleAdditions;
+  for (const addition of additions) {
     decisions.push({
       action: 'add',
       cardId: addition.cardId,
       combinationId: addition.combinationId,
+      jokerExtension: addition.jokerExtension,
     });
   }
 
-  // Try to recover jokers if possible
-  for (const recovery of actions.possibleJokerRecoveries) {
-    decisions.push({
-      action: 'recover_joker',
-      cardId: recovery.replacementCardId,
-      combinationId: recovery.combinationId,
-    });
-  }
-
-  // Try to place new combinations
+  // First use the combinations currently available in hand. Recover at most
+  // one Joker at a time; the executor replans its reuse before ending the turn.
   const plan = findBestCombinations(player.hand, state);
   for (const combo of plan.combos) {
     decisions.push({
@@ -314,6 +342,21 @@ function planPlay(state: GameState, player: Player): AIDecision[] {
       cardIds: combo.cards.map(c => c.id),
       combinationType: combo.type,
     });
+  }
+  const recovery = actions.possibleJokerRecoveries[0];
+  if (recovery) {
+    decisions.push({
+      action: 'recover_joker',
+      cardId: recovery.replacementCardId,
+      cardIds: recovery.replacementCardIds,
+      combinationId: recovery.combinationId,
+    });
+  }
+
+  // A true carré (never a brelan, never a carré holding a Joker) can be sent
+  // back into the base by the player responsible for it.
+  for (const combinationId of actions.returnableCarreIds) {
+    decisions.push({ action: 'return_carre', combinationId });
   }
 
   return decisions;
@@ -326,6 +369,7 @@ function chooseDiscard(state: GameState, player: Player): AIDecision {
     return { action: 'discard', cardId: '', faceDown: true };
   }
 
+  const openingThisTurn=isTeamMode(state.config)&&player.status==='not_opened'&&validateOpening(state,player.id,state.turnState?.temporaryCombinations??[]).valid;
   // Score each card for discard
   let bestDiscard: GameCard = hand[0];
   let bestScore = -Infinity;
@@ -346,8 +390,8 @@ function chooseDiscard(state: GameState, player: Player): AIDecision {
       const c = card as Card;
       
       // Check if card is playable on table (would be a fault)
-      if (player.status === 'opened') {
-        if (isCardPlayableOnTable(card, state.tableCombinations)) {
+      if (player.status === 'opened' || openingThisTurn) {
+        if (isDiscardPlayable(state,player.id,card,[...state.tableCombinations,...(state.turnState?.temporaryCombinations??[])])) {
           score -= 500; // Don't discard playable cards
         }
       }
@@ -376,6 +420,7 @@ function chooseDiscard(state: GameState, player: Player): AIDecision {
       score -= value * 2;
     }
 
+    if(state.config.aiDifficulty==='hard') score += futurePotential(hand.filter(c=>c.id!==card.id))*3;
     if (score > bestScore) {
       bestScore = score;
       bestDiscard = card;
@@ -394,45 +439,63 @@ function chooseDiscard(state: GameState, player: Player): AIDecision {
 // (i.e. actually advances to the next player). Falls back safely so the game
 // can never get stuck on an AI turn — including when an attempted opening below
 // the SUITE is rejected by the engine.
-function aiDiscardAndAdvance(state: GameState, meIndex: number): GameState {
-  const tryDiscard = (s: GameState): GameState | null => {
-    const me = s.players[meIndex];
+function aiDiscardAndAdvance(inputState: GameState, meIndex: number): GameState {
+  let state = inputState;
+  const tryDiscard = (candidate: GameState): GameState | null => {
+    const me = candidate.players[meIndex];
     if (me.hand.length === 0) return null;
-    const choice = chooseDiscard(s, me);
+
+    const recoveredUnplayed = candidate.turnState?.recoveredJokers.find(jokerId =>
+      me.hand.some(card => card.id === jokerId) &&
+      !candidate.turnState!.reusedJokers.includes(jokerId) &&
+      !candidate.tableCombinations.some(combo =>
+        validateCombination(combo).valid && combo.cards.some(card => card.id === jokerId)
+      )
+    );
+    const choice = recoveredUnplayed
+      ? { action: 'discard' as const, cardId: recoveredUnplayed, faceDown: false }
+      : chooseDiscard(candidate, me);
     const cardId = choice.cardId || me.hand[me.hand.length - 1].id;
-    const next = discard(s, cardId, choice.faceDown ?? true);
-    // A successful discard advances currentPlayerIndex or ends the round.
-    if (next.currentPlayerIndex !== s.currentPlayerIndex || next.phase !== 'playing') return next;
-    return null;
+    const next = discard(candidate, cardId, choice.faceDown ?? true);
+    return next.currentPlayerIndex !== candidate.currentPlayerIndex || next.phase !== 'playing'
+      ? next
+      : null;
   };
 
-  // 1) Try the normal discard.
   let result = tryDiscard(state);
   if (result) return result;
 
-  // 2) The discard was rejected (most likely an illegal opening below SUITE).
-  //    Take back this AI's just-placed combinations into its hand and retry.
-  const me = state.players[meIndex];
-  if (me.status === 'not_opened') {
-    const ownCombos = state.tableCombinations.filter(c => c.ownerId === me.id);
-    if (ownCombos.length > 0) {
-      const returnedCards = ownCombos.flatMap(c => c.cards);
-      const rebuilt: GameState = {
-        ...state,
-        tableCombinations: state.tableCombinations.filter(c => c.ownerId !== me.id),
-        players: state.players.map((p, i) =>
-          i === meIndex ? { ...p, hand: [...p.hand, ...returnedCards] } : p
-        ),
-      };
-      result = tryDiscard(rebuilt);
-      if (result) return result;
+  // Roll back a provisional first pose before considering a CHOP undo.
+  const rolledBack = takeBackCombinations(state);
+  if (rolledBack !== state) {
+    state = rolledBack;
+    result = tryDiscard(state);
+    if (result) return result;
+  }
+
+  // A failed mandatory-card/opening plan may still cancel the untouched CHOP.
+  // Then draw from the deck and let the normal AI planner retry from a legal state.
+  if (state.turnState?.drawSource === 'chop') {
+    const afterReject = rejectChop(state);
+    if (afterReject !== state) {
+      const afterDraw = drawCard(afterReject);
+      if (afterDraw.phase !== 'playing' || afterDraw.currentPlayerIndex !== meIndex) return afterDraw;
+      if (afterDraw.turnState?.phase === 'playing' && afterDraw.turnState.drawSource === 'deck') {
+        return executeAITurn(afterDraw);
+      }
+      return afterDraw;
     }
   }
 
-  // 3) Last-resort safety: discard any remaining card so the turn always ends.
-  const cur = state.players[meIndex];
-  if (cur.hand.length > 0) {
-    const forced = discard(state, cur.hand[0].id, !cur.hand[0].isJoker);
+  result = tryDiscard(state);
+  if (result) return result;
+
+  // The engine is the final authority. Never bypass a rejected rule with a
+  // direct state mutation or a forced penalty; a valid normal turn always has
+  // at least one card available for this last discard attempt.
+  const me = state.players[meIndex];
+  if (me.hand.length > 0) {
+    const forced = discard(state, me.hand[0].id, !me.hand[0].isJoker);
     if (forced.currentPlayerIndex !== state.currentPlayerIndex || forced.phase !== 'playing') return forced;
   }
   return state;
@@ -461,7 +524,27 @@ export function executeAITurn(state: GameState): GameState {
 
   // ── Phase 2: place / add / recover (always keep ≥1 card for the discard) ──
   const playDecisions = planPlay(currentState, currentState.players[meIndex]);
-  for (const pd of playDecisions) {
+  const mandatoryChopCardId = currentState.turnState?.mandatoryChopCardId;
+  const decisionUsesMandatoryCard = (decision: AIDecision) => Boolean(mandatoryChopCardId && (
+    (decision.action === 'place' && decision.cardIds?.includes(mandatoryChopCardId)) ||
+    ((decision.action === 'add' || decision.action === 'recover_joker') && decision.cardId === mandatoryChopCardId)
+  ));
+  const planUsesMandatoryCard = mandatoryChopCardId && playDecisions.some(decisionUsesMandatoryCard);
+  if (mandatoryChopCardId && !planUsesMandatoryCard) {
+    // Do not make unrelated table mutations and then discover at discard time
+    // that the mandatory CHOP card was not used. Cancel first, then draw normally.
+    const afterReject = rejectChop(currentState);
+    if (afterReject !== currentState) {
+      const afterDraw = drawCard(afterReject);
+      if (afterDraw.phase !== 'playing' || afterDraw.currentPlayerIndex !== meIndex) return afterDraw;
+      return afterDraw.turnState?.phase === 'playing' ? executeAITurn(afterDraw) : afterDraw;
+    }
+  }
+
+  const orderedPlayDecisions = mandatoryChopCardId
+    ? [...playDecisions].sort((a, b) => Number(decisionUsesMandatoryCard(b)) - Number(decisionUsesMandatoryCard(a)))
+    : playDecisions;
+  for (const pd of orderedPlayDecisions) {
     const handLen = currentState.players[meIndex].hand.length;
     switch (pd.action) {
       case 'place':
@@ -472,14 +555,60 @@ export function executeAITurn(state: GameState): GameState {
         break;
       case 'add':
         if (pd.cardId && pd.combinationId && handLen - 1 >= 1) {
-          currentState = addToCombination(currentState, pd.cardId, pd.combinationId);
+          currentState = addToCombination(currentState, pd.cardId, pd.combinationId, pd.jokerExtension);
         }
         break;
       case 'recover_joker':
         if (pd.cardId && pd.combinationId) {
-          currentState = recoverJoker(currentState, pd.combinationId, pd.cardId);
+          currentState = recoverJoker(currentState, pd.combinationId, pd.cardIds ?? pd.cardId);
         }
         break;
+      case 'return_carre':
+        if (pd.combinationId) {
+          currentState = returnCarreToBase(currentState, pd.combinationId);
+        }
+        break;
+    }
+
+    if (mandatoryChopCardId && decisionUsesMandatoryCard(pd)) {
+      const mandatoryUsed = hasPlayedMandatoryChopCard(currentState);
+      if (!mandatoryUsed) {
+        const afterReject = rejectChop(currentState);
+        if (afterReject === currentState) return currentState;
+        const afterDraw = drawCard(afterReject);
+        if (afterDraw.phase !== 'playing' || afterDraw.currentPlayerIndex !== meIndex) return afterDraw;
+        return afterDraw.turnState?.phase === 'playing' ? executeAITurn(afterDraw) : afterDraw;
+      }
+    }
+  }
+
+  // Recovering a Joker changes the hand after the original plan was made. Re-run
+  // the shared candidate/engine validation once so the recovered card can be
+  // added to a table combo or reused in a new combination this same turn.
+  const meAfterPlay = currentState.players[meIndex];
+  const pendingRecoveredJoker = currentState.turnState?.recoveredJokers.find(jokerId =>
+    meAfterPlay.hand.some(card => card.id === jokerId) &&
+    !currentState.turnState!.reusedJokers.includes(jokerId)
+  );
+  if (pendingRecoveredJoker) {
+    const possibleAddition = getAvailableActions(currentState).possibleAdditions.find(
+      addition => addition.cardId === pendingRecoveredJoker
+    );
+    if (possibleAddition) {
+      currentState = addToCombination(currentState, possibleAddition.cardId, possibleAddition.combinationId, possibleAddition.jokerExtension);
+    } else {
+      const refreshedPlan = findBestCombinations(meAfterPlay.hand, currentState);
+      const reuseCombo = refreshedPlan.combos.find(combo =>
+        combo.cards.some(card => card.id === pendingRecoveredJoker) &&
+        meAfterPlay.hand.length - combo.cards.length >= 1
+      );
+      if (reuseCombo) {
+        currentState = placeCombination(
+          currentState,
+          reuseCombo.cards.map(card => card.id),
+          reuseCombo.type
+        );
+      }
     }
   }
 
