@@ -1,5 +1,5 @@
 import { GameCard } from '@/game/core/types';
-import { detectHandGroups, DetectedGroup } from '@/game/core/hand-groups';
+import { detectHandGroups, DetectedGroup, MIN_LOCK_SIZE } from '@/game/core/hand-groups';
 
 export const HAND_ADVANCE = 0.30;
 // A group boundary overlaps by half a card; it is not an empty gap.
@@ -13,7 +13,7 @@ export function handLayout(cards: readonly GameCard[], lockedSets: readonly stri
   const occupied = new Set<string>();
   for (const ids of lockedSets) {
     const indexes = ids.map(id => cards.findIndex(c => c.id === id)).sort((a,b)=>a-b);
-    if (indexes.length < 2 || indexes.some((v,i)=>v<0 || (i>0 && v!==indexes[i-1]+1))) continue;
+    if (indexes.length < MIN_LOCK_SIZE || indexes.some((v,i)=>v<0 || (i>0 && v!==indexes[i-1]+1))) continue;
     if (ids.some(id=>occupied.has(id))) continue;
     ids.forEach(id=>occupied.add(id));
     segments.push({ids: indexes.map(i=>cards[i].id),start:indexes[0],end:indexes.at(-1)!,locked:true,

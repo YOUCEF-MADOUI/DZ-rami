@@ -73,6 +73,12 @@ await flush(60);
 await click(findByText('button', '5 Joueurs'), '5 Joueurs');
 await flush(60);
 await click(findByText('button', 'Commencer'), 'Commencer');
+await flush(120);
+// "Commencer" now opens the rules of the pending table before the deal.
+check('Start opens the pre-game settings first', !document.querySelector('[data-ci]'));
+check('Pre-game settings describe the pending table', /5 Joueurs/.test(document.querySelector('[data-pregame-summary]')?.textContent ?? ''));
+check('Pre-game settings keep the full rule set', document.querySelectorAll('[data-setting]').length > 10);
+await click(findByText('button', 'Commencer la partie'), 'Commencer la partie');
 await flush(200);
 
 const piocherButton = () => Array.from(document.querySelectorAll('button'))
@@ -136,8 +142,8 @@ check('The valid status mentions the VIERGE, not the SUITE',
 const status78Suite100 = openingStatusText({ opened: false, naturalScore: 78, total: 105, vierge: 71, suite: 100, hasCombos: true });
 check('78 naturals with SUITE 100 are not refused either', !/il manque/.test(status78Suite100), status78Suite100);
 const status70 = openingStatusText({ opened: false, naturalScore: 70, total: 90, vierge: 71, suite: 82, hasCombos: true });
-check('70 naturals are refused against the VIERGE 71', /il manque 1 points naturels/.test(status70), status70);
-check('The shortfall is measured against the VIERGE', /VIERGE 71/.test(status70) && !/SUITE 82/.test(status70), status70);
+check('70 naturals are not announced as a valid opening', !/validez l’ouverture/.test(status70), status70);
+check('The shortfall sentence ("il manque …") is gone', !/il manque/.test(status70) && !/Naturel/.test(status70), status70);
 
 // ── 2b. Grid areas for every table size ───────────────────────────────────
 const { resolveJokerPlacement } = await import('../../game/core/validation');
@@ -269,6 +275,13 @@ await click(document.querySelector('[data-combo-id="ui-target"]'),'extend oppone
 check('Opponent combination extends immediately after opening',document.querySelectorAll('[data-combo-id="ui-target"] .card').length === 4);
 await click(findByText('button','Rentrer le carré dans la base'),'return carré');
 check('Returned carré disappears from table', !document.querySelector('[data-combo-id="ui-base"]'));
+// The four cards must be visible in the discard area immediately (same render).
+const basePile=document.querySelector('[data-base-pile]');
+check('Returned carré is visible in the discard area at once',!!basePile&&basePile.getAttribute('data-base-count')==='4');
+check('Base pile shows the four physical cards face up',Array.from(basePile?.querySelectorAll('.card')??[]).length===4&&!basePile?.querySelector('.card-back'));
+check('Base pile sits inside the discard dock',!!document.querySelector('[data-discard-hub] [data-base-pile]'));
+check('Base pile is grouped as one carré',basePile?.querySelectorAll('[data-base-square]').length===1);
+check('Base pile names the return',/Base · 4/.test(basePile?.textContent??''));
 await click(document.querySelector('button[aria-label^="Ouvrir la défausse"]'),'open discard history');
 check('Reserve cards do not appear in current discard',!!findByText('h3','Défausse actuelle (0)'));
 check('Current discard contains no reserve cards',Array.from(document.querySelectorAll('h3')).find(h=>h.textContent?.includes('Défausse actuelle'))?.parentElement?.parentElement?.querySelectorAll('.card').length === 0);
@@ -376,7 +389,9 @@ check('Exact eight recovery produces four natural cards',document.querySelectorA
 check('Recovered eight Joker remains a Joker in the hand',!!document.querySelector('[data-ci] .joker-card'));
 check('Natural four eights enable reserve action',!!findByText('button','Rentrer le carré dans la base'));
 const shortTotal=openingStatusText({opened:false,naturalScore:80,total:80,vierge:71,suite:82,hasCombos:true});
-check('Natural sufficient but total insufficient gives TOTAL shortfall',shortTotal.includes('TOTAL 80')&&shortTotal.includes('manque 2')&&!shortTotal.includes('points naturels'));
+check('No shortfall sentence is shown when the opening is not reached yet',shortTotal==='',shortTotal);
+const validOpening=openingStatusText({opened:false,naturalScore:80,total:80,vierge:71,suite:71,hasCombos:true});
+check('A reached opening is announced positively',/validez l’ouverture/.test(validOpening)&&!/il manque/.test(validOpening),validOpening);
 
 
 // Presentation sorting must never mutate engine state or Joker metadata.
@@ -605,6 +620,75 @@ check('Each player has a distinct stable color',new Set(eightFixture.players.map
 check('Reordering the player array does not change colors',eightFixture.players.every(p=>playerColor([...eightFixture.players].reverse(),p.id)===playerColor(eightFixture.players,p.id)));
 check('Distribution is slower than the previous 50ms cadence',motion.DEAL_INTERVAL_MS===120&&motion.DEAL_FLIGHT_MS===300);
 
+// Melds are grouped per player: side by side, in the order of the openings.
+const groupedFixture={...eightFixture,
+  tableCombinations:[
+    {id:'grp-c-1',type:'tierce' as const,ownerId:'player-2',cards:['3','4','5'].map((r,i)=>makeCard(r as Rank,'hearts',`grp-c-${i}`))},
+    {id:'grp-a-1',type:'carre' as const,ownerId:'player-0',cards:(['spades','hearts','diamonds','clubs'] as const).map((s,i)=>makeCard('9',s,`grp-a-${i}`))},
+    {id:'grp-b-1',type:'tierce' as const,ownerId:'player-1',cards:['J','Q','K'].map((r,i)=>makeCard(r as Rank,'clubs',`grp-b-${i}`))},
+    {id:'grp-c-2',type:'tierce' as const,ownerId:'player-2',cards:['7','8','9'].map((r,i)=>makeCard(r as Rank,'diamonds',`grp-c2-${i}`))},
+    {id:'grp-a-2',type:'tierce' as const,ownerId:'player-0',cards:['10','J','Q'].map((r,i)=>makeCard(r as Rank,'spades',`grp-a2-${i}`))},
+  ]};
+await mountScenario('grouped-public-table',groupedFixture);
+const meldGroups=[...document.querySelectorAll('[aria-label="Combinaisons publiques sur la table"] [data-meld-group]')];
+check('Melds are grouped per player in the order of the openings',
+  meldGroups.map(g=>g.getAttribute('data-meld-group')).join()==='player-2,player-0,player-1');
+check('Each player keeps all his melds in one single group',
+  meldGroups.map(g=>g.querySelectorAll('[data-combo-id]').length).join()==='2,2,1');
+check('No meld is rendered outside a player group',
+  document.querySelectorAll('[aria-label="Combinaisons publiques sur la table"] [data-combo-id]').length===5);
+check('Group headings name the owner',
+  meldGroups.map(g=>g.querySelector('.meld-group-name')?.textContent).join()==='Karim,Vous,Amine');
+check('A player group is laid out as one side-by-side row',meldGroups.every(g=>!!g.querySelector('.meld-group-melds')) && !!document.querySelector('.meld-group-melds [data-combo-id]'));
+
+
+// Locked combinations: cumulative selection, and the arrow that extends them.
+const lk=(rank:string,suit:string,id:string)=>makeCard(rank as Rank,suit as Suit,id);
+const run1=[lk('5','hearts','lk-5'),lk('6','hearts','lk-6'),lk('7','hearts','lk-7')];
+const run2=[lk('J','clubs','lk-J'),lk('Q','clubs','lk-Q'),lk('K','clubs','lk-K')];
+const drawnEight=lk('8','hearts','lk-8');
+const lockBase=engine.startNewRound(engine.createInitialGameState({...DEFAULT_CONFIG,playerCount:2},['Vous','Amine']));
+// The drawn card lands right next to the locked run (that is what the arrow is for).
+// One spare card stays in hand: the engine never lets a player empty their hand.
+const lockSpare=lk('2','spades','lk-spare');
+const lockHand=[...run1,drawnEight,...run2,lockSpare];
+const lockFixture={...lockBase,phase:'playing' as const,currentPlayerIndex:0,
+  players:lockBase.players.map((p,i)=>i===0?{...p,hand:lockHand,status:'opened' as const}:p),
+  turnState:{...lockBase.turnState!,playerId:'player-0',phase:'playing' as const,hasDrawn:true,isInitialDealTurn:false,temporaryCombinations:[],actionsThisTurn:[]}};
+const lockView={sortMode:'manual' as const,manualOrder:lockHand.map(c=>c.id),
+  lockedSets:[run1.map(c=>c.id),run2.map(c=>c.id)],selectedCards:[]};
+await act(async()=>root.render(React.createElement(GameScreen,{key:'locked-ext',initialState:lockFixture,initialView:lockView,config:lockFixture.config,playerNames:lockFixture.players.map(p=>p.name),onBack:()=>{}})));
+const lockedSlots=()=>document.querySelectorAll('[data-card-id][data-locked="true"]').length;
+const extArrows=()=>Array.from(document.querySelectorAll('[data-locked-extension]'));
+const selectedNow=()=>document.querySelectorAll('.card.selected').length;
+check('Both combinations are locked as separate blocks',lockedSlots()===6);
+check('An arrow offers the adjacent card that extends the locked run',extArrows().length===1&&extArrows()[0].getAttribute('data-extension-card')==='lk-8');
+check('The arrow carries its own class and an explicit label',(extArrows()[0] as HTMLElement).className.includes('hand-locked-extension')&&/Ajouter 8/.test(extArrows()[0].getAttribute('aria-label')??''));
+await click(document.querySelector('[data-card-id="lk-5"] .card'),'select first locked block');
+check('Selecting a locked combination selects the whole block',selectedNow()===3);
+await click(document.querySelector('[data-card-id="lk-Q"] .card'),'select second locked block');
+check('Selecting a second locked combination ADDS to the selection',selectedNow()===6);
+await click(document.querySelector('[data-card-id="lk-Q"] .card'),'deselect second locked block');
+check('Clicking a selected locked block removes only that block',selectedNow()===3);
+await click(extArrows()[0],'extend locked run');
+check('The arrow merges the card into one single locked block',lockedSlots()===7&&extArrows().length===0);
+check('Merging is announced to the player',/Carte ajoutée à la combinaison/.test(document.body.textContent??''));
+
+// Multi-selection: a single "Poser les combinaisons" button lays them all down.
+const placeAll=()=>document.querySelector('[data-place-all-combinations]');
+// The merged block is still selected and now holds four cards.
+await click(document.querySelector('[data-card-id="lk-Q"] .card'),'add the second locked block to the selection');
+check('Two locked blocks are selected together',document.querySelectorAll('.card.selected').length===7);
+check('A "Poser les combinaisons (2)" button appears for a multi-selection',!!placeAll()&&/Poser les combinaisons \(2\)/.test(placeAll()?.textContent??''));
+check('The multi-selection is not labelled invalid',!/Invalide/.test(document.querySelector('.hand-actions')?.textContent??''));
+const handBefore=(document.querySelectorAll('[data-ci]').length);
+await click(placeAll(),'place both combinations');
+check('Both combinations leave the hand at once',document.querySelectorAll('[data-ci]').length===handBefore-7);
+check('Both combinations are on the table (or in the opening draft)',document.querySelectorAll('[data-combo-id]').length>=2);
+check('The selection is cleared after the batch pose',document.querySelectorAll('.card.selected').length===0);
+check('The batch pose is announced',/2 combinaisons posées/.test(document.body.textContent??''));
+// Restore the shared fixture the following layout checks rely on.
+await mountScenario('after-locks',eightFixture);
 
 check('Menu and counters are below the hand as in the reference sketch',!!(document.querySelector('[data-local-hand-panel]')!.compareDocumentPosition(document.querySelector('.game-info-bar')!)&Node.DOCUMENT_POSITION_FOLLOWING));
 check('Opponents use compact perimeter panels',document.querySelectorAll('.seat-panel').length===eightFixture.players.length-1);

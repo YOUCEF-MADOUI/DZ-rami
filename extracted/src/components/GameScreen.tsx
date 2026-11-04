@@ -1,7 +1,7 @@
 'use client';
 import FittedTable from './FittedTable';
 import type { CSSProperties } from 'react';
-import { tableCards, tableCombinations, playerColor } from './presentation/table-order';
+import { tableCards, tableCombinations, groupTableCombinations, playerColor } from './presentation/table-order';
 import { useEffect, useState, useCallback, useMemo, useRef } from 'react';
 import {
   GameState, GameConfig, GameCard, Card, Combination, RANK_ORDER, TablePosition,
@@ -13,7 +13,8 @@ import {
   detectCombinationType, canAddToCombination, calculateVierge, calculateTotal,
   getOpeningHudValues, getJokerRepresentation, canRecoverJoker, resolveJokerPlacement, getCombinationClassLabel, getStableJokerPlacement,
 } from '@/game/core/validation';
-import { detectHandGroups, moveBlock } from '@/game/core/hand-groups';
+import { detectHandGroups, moveBlock, MIN_LOCK_SIZE } from '@/game/core/hand-groups';
+import { planSelectionPlacement } from '@/game/core/selection-groups';
 import { hasPlayedMandatoryChopCard, REPORTABLE_FAULTS, getJokerAdditionChoices, canPlayerRecoverJoker } from '@/game/core/engine';
 import CardView from './CardView';
 import ScoreBoard from './ScoreBoard';
@@ -22,6 +23,7 @@ import DiscardSpread from './DiscardSpread';
 import { drawVisualEvent, visualDealer } from './presentation/table-motion';
 import DiscardEffects from './DiscardEffects';
 import OpponentHand from './OpponentHand';
+import BasePile from './BasePile';
 import { projectPlayerView, PublicPlayer } from '@/game/core/public-view';
 import { isTeamMode, teamOf, TEAM_NAMES, openingRequirements, scoreEntries, winnerScoreId } from '@/game/core/team-rules';
 import PlayerHand, { SortMode } from './PlayerHand';
@@ -118,9 +120,14 @@ export interface OpeningStatusInput {
 /**
  * Status line of the opening HUD.
  *
+ * Only POSITIVE information is shown. There is deliberately no "il manque N
+ * points" sentence: the counters (VIERGE / SUITE / TOTAL) are already in the
+ * info bar, and a shortfall line computed from a freshly prepared pose was
+ * noisy and sometimes misleading (e.g. "Naturel 0 — il manque 91"). An empty
+ * string means "nothing to add".
+ *
  * The comparison is always made against the VIERGE, never against the SUITE:
- * with VIERGE 71 and SUITE 82, 78 natural points open normally and the message
- * must never claim that points are missing.
+ * with VIERGE 71 and SUITE 82, 78 natural points open normally.
  */
 export function openingStatusText(input: OpeningStatusInput): string {
   if (input.opened) {
@@ -129,13 +136,11 @@ export function openingStatusText(input: OpeningStatusInput): string {
   if (!input.hasCombos) {
     return `Points naturels nécessaires : VIERGE ${input.vierge}`;
   }
-  if (input.naturalScore >= input.vierge && input.total < input.suite) {
-    return `TOTAL ${input.total} — il manque ${input.suite - input.total} points au TOTAL (SUITE ${input.suite})`;
-  }
-  if (input.naturalScore >= input.vierge) {
+  if (input.naturalScore >= input.vierge && input.total >= input.suite) {
     return `Naturel ${input.naturalScore} ≥ VIERGE ${input.vierge} : validez l’ouverture puis défaussez`;
   }
-  return `Naturel ${input.naturalScore} — il manque ${input.vierge - input.naturalScore} points naturels (VIERGE ${input.vierge})`;
+  // Not enough points yet: no negative sentence, the counters speak for themselves.
+  return '';
 }
 
 export default function GameScreen({ config, playerNames, onBack, initialState, initialView, onPersist, hotseat = false }: Props) {
@@ -156,6 +161,8 @@ export default function GameScreen({ config, playerNames, onBack, initialState, 
   const [comboHover, setComboHover] = useState<string | null>(null);
   const [comboHoverValid, setComboHoverValid] = useState(false);
   const [showDiscardPile, setShowDiscardPile] = useState(false);
+  /** Read-only view of the carrés returned to the base. */
+  const [showBasePile, setShowBasePile] = useState(false);
   // Fault reporting: which player is being accused (null = closed menu).
   const [faultTargetId, setFaultTargetId] = useState<string | null>(null);
   // Read-only zoom on an opponent public combinations (display only, never touches the state).
@@ -171,18 +178,24 @@ export default function GameScreen({ config, playerNames, onBack, initialState, 
   useEffect(() => { if (!initialState) actions.startGame(config, playerNames); }, []); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => { if (message) { const t = setTimeout(() => setMessage(''), 5000); return () => clearTimeout(t); } }, [message]);
 
+  const humanCards = gameState?.players[activeIndex]?.hand ?? EMPTY_HAND;
+  /**
+   * Only the locks that still hold a real combination of cards in hand.
+   * A block that lost cards (one of them was played) or an old two-card save
+   * falls below three cards and is silently released instead of freezing a pair.
+   */
+  const activeLockedSets = useMemo(() => {
+    const ids = new Set(humanCards.map(card => card.id));
+    return lockedSets.map(set => set.filter(id => ids.has(id))).filter(set => set.length >= MIN_LOCK_SIZE);
+  }, [humanCards, lockedSets]);
   useEffect(()=>{
     if(!gameState||!onPersist)return;
-    const persist=()=>onPersist({version:1,state:gameState,view:{sortMode,manualOrder,lockedSets,selectedCards}});
+    // Persist the effective locks, never the released ones.
+    const persist=()=>onPersist({version:1,state:gameState,view:{sortMode,manualOrder,lockedSets:activeLockedSets,selectedCards}});
     persist();
     window.addEventListener('pagehide',persist);
     return ()=>window.removeEventListener('pagehide',persist);
-  },[gameState,sortMode,manualOrder,lockedSets,selectedCards,onPersist]);
-  const humanCards = gameState?.players[activeIndex]?.hand ?? EMPTY_HAND;
-  const activeLockedSets = useMemo(() => {
-    const ids = new Set(humanCards.map(card => card.id));
-    return lockedSets.map(set => set.filter(id => ids.has(id))).filter(set => set.length >= 2);
-  }, [humanCards, lockedSets]);
+  },[gameState,sortMode,manualOrder,activeLockedSets,selectedCards,onPersist]);
   const orderedHand = useMemo(
     () => sortMode === 'manual' ? applyManualOrder(humanCards, manualOrder) : sortCards(humanCards, sortMode),
     [humanCards, sortMode, manualOrder]
@@ -200,12 +213,17 @@ export default function GameScreen({ config, playerNames, onBack, initialState, 
     activeLockedSets.find(set => set.includes(cardId)) ?? null, [activeLockedSets]);
   // Lock a list of cards together as a new set (shared by both flows).
   const lockCards = useCallback((ids: string[]) => {
-    if (ids.length < 2) { setMessage('Sélectionnez au moins 2 cartes à verrouiller'); return; }
+    // Only a real combination (three cards or more) may be frozen. Locking two
+    // cards blocked the hand for nothing and left orphan pairs behind.
+    if (ids.length < MIN_LOCK_SIZE) {
+      setMessage(`🔓 Un verrou doit contenir au moins ${MIN_LOCK_SIZE} cartes (une combinaison)`);
+      return;
+    }
     const orderedIds = orderedHand.map(card => card.id).filter(id => ids.includes(id));
     setLockedSets(prev => {
       const cleaned = prev
         .map(s => s.filter(id => !orderedIds.includes(id)))
-        .filter(s => s.length >= 2);
+        .filter(s => s.length >= MIN_LOCK_SIZE);
       return [...cleaned, orderedIds];
     });
     actions.clearSelection();
@@ -230,16 +248,45 @@ export default function GameScreen({ config, playerNames, onBack, initialState, 
     setSortMode('manual');
   }, [orderedHand, actions]);
   // ── Select a whole group ──
-  const handleSelectGroup = useCallback((cardIds: string[]) => {
+  // A LOCKED combination is a frozen block: selecting one must not wipe the
+  // others, so several locked combinations can be selected together (and played
+  // as one opening). An unlocked auto-detected hint keeps the exclusive behaviour.
+  const handleSelectGroup = useCallback((cardIds: string[], locked = false) => {
     const allSelected = cardIds.every(id => selectedCards.includes(id));
     if (allSelected) {
       cardIds.forEach(id => actions.deselectCard(id));
-    } else {
-      // Clear then select the group
-      actions.clearSelection();
-      cardIds.forEach(id => actions.selectCard(id));
+      return;
     }
+    if (locked) {
+      cardIds.forEach(id => { if (!selectedCards.includes(id)) actions.selectCard(id); });
+      return;
+    }
+    // Clear then select the group
+    actions.clearSelection();
+    cardIds.forEach(id => actions.selectCard(id));
   }, [selectedCards, actions]);
+  // Small arrow in the hand: merge the neighbouring card into the locked block.
+  const extendLockedSet = useCallback((cardId: string, setIds: string[]) => {
+    const order = orderedHand.map(card => card.id);
+    const merged = order.filter(id => id === cardId || setIds.includes(id));
+    if (merged.length < 3) return;
+    setLockedSets(prev => {
+      const cleaned = prev
+        .map(set => set.filter(id => !merged.includes(id)))
+        .filter(set => set.length >= MIN_LOCK_SIZE);
+      return [...cleaned, merged];
+    });
+    // Keep the selection consistent: if the whole block was selected, the new
+    // card joins it; otherwise the selection is left untouched.
+    if (setIds.every(id => selectedCards.includes(id)) && !selectedCards.includes(cardId)) {
+      actions.selectCard(cardId);
+    }
+    const mergedCards = merged
+      .map(id => orderedHand.find(card => card.id === id))
+      .filter((card): card is NonNullable<typeof card> => !!card);
+    const type = mergedCards.length >= 3 ? detectCombinationType(mergedCards) : null;
+    setMessage(type ? `🔗 Carte ajoutée à la combinaison (${type === 'carre' ? 'carré' : 'tierce'})` : '🔗 Carte ajoutée à la combinaison verrouillée');
+  }, [orderedHand, selectedCards, actions]);
   const onCardDragStart = useCallback((cid: string) => { dragCardRef.current = cid; }, []);
   const onCardDragEnd = useCallback(() => { dragCardRef.current = null; setDiscardHover(false); setComboHover(null); }, []);
   const onTableDragOver = useCallback((e: React.DragEvent) => { e.preventDefault(); if (dragCardRef.current) setDiscardHover(true); }, []);
@@ -332,6 +379,23 @@ export default function GameScreen({ config, playerNames, onBack, initialState, 
   // is the slot it occupies in the hand, and it is never re-sorted afterwards.
   const detectedType = selCards.length >= 3 ? detectCombinationType(selCards) : null;
   const pendingJokerPlacement = detectedType ? resolveJokerPlacement(selCards, detectedType) : null;
+  /**
+   * A selection may hold SEVERAL combinations (typically two locked blocks).
+   * `planSelectionPlacement` splits it; when it yields more than one group, the
+   * action bar offers "Poser les combinaisons" instead of a single "Poser".
+   */
+  const selectionPlacements = selCards.length >= 3
+    ? planSelectionPlacement(orderedHand, selectedCards, activeLockedSets)
+    : null;
+  const multiPlacements = selectionPlacements && selectionPlacements.length > 1 ? selectionPlacements : null;
+  const handlePlaceAll = () => {
+    if (!multiPlacements) { setMessage('Sélection invalide'); return; }
+    const count = multiPlacements.length;
+    const ok = actions.placeCombinations(multiPlacements);
+    setMessage(ok
+      ? `🃏 ${count} combinaisons posées`
+      : 'Pose refusée par les règles : vérifiez chaque combinaison.');
+  };
   const handleAutoPlace = () => {
     if (!detectedType) { setMessage('Combinaison invalide'); return; }
     actions.place(selCards.map(card => card.id), detectedType, pendingJokerPlacement ?? undefined);
@@ -465,7 +529,24 @@ export default function GameScreen({ config, playerNames, onBack, initialState, 
         </div>
         <FittedTable>
         <section aria-label="Combinaisons publiques sur la table" className="public-meld-table relative z-10 player-meld-zone">
-          {tableCombinations(publicView.tableCombinations).map(combo=>renderCombo(combo,canAct,false,true))}
+          {groupTableCombinations(publicView.tableCombinations).map(group=>{
+            const owner=publicView.players.find(player=>player.id===group.ownerId);
+            const color=playerColor(publicView.players,group.ownerId);
+            const team = owner && isTeamMode(config) ? TEAM_NAMES[teamOf(owner)].split(' · ')[0] : null;
+            return (
+              <div key={group.ownerId} className="meld-group" data-meld-group={group.ownerId}
+                style={{'--owner-color':color} as CSSProperties}>
+                <div className="meld-group-heading">
+                  <span className="player-color-dot" style={{background:color}} />
+                  <span className="meld-group-name">{owner?.name ?? 'Joueur'}</span>
+                  {team && <span className="meld-group-team">{team}</span>}
+                </div>
+                <div className="meld-group-melds">
+                  {group.combos.map(combo=>renderCombo(combo,canAct,false,true))}
+                </div>
+              </div>
+            );
+          })}
         </section>
         {draftHumanCombos.length>0&&<section aria-label="Brouillon de votre ouverture" className="public-meld-table relative z-10 border border-dashed border-amber-400 p-2">
           <span className="w-full text-xs text-amber-200">Brouillon — à valider</span>
@@ -487,6 +568,17 @@ export default function GameScreen({ config, playerNames, onBack, initialState, 
           <button className="btn-secondary w-full" onClick={()=>setPendingJoker(null)}>Annuler</button>
         </div>
       </div>}
+      {showBasePile && (
+        <div className="absolute inset-0 bg-black/70 z-40 flex items-center justify-center p-4" onClick={() => setShowBasePile(false)}>
+          <div className="bg-slate-800 rounded-2xl p-4 max-w-md w-full max-h-[80vh] overflow-y-auto" onClick={e => e.stopPropagation()} data-base-modal>
+            <div className="flex justify-between items-center mb-3"><h3 className="text-amber-400 font-bold">Base — carrés rentrés ({publicView.baseCards?.length ?? 0})</h3><button onClick={() => setShowBasePile(false)} className="text-slate-400 font-bold text-lg">✕</button></div>
+            <div className="flex flex-wrap gap-3">{Array.from({length: Math.ceil((publicView.baseCards?.length ?? 0)/4)}, (_, squareIndex) => (
+              <div key={squareIndex} className="flex gap-1" data-base-square>{(publicView.baseCards ?? []).slice(squareIndex*4, squareIndex*4+4).map(card => <CardView key={card.id} card={card} small />)}</div>
+            ))}</div>
+            {!(publicView.baseCards?.length ?? 0) && <p className="text-slate-500 text-center py-4">Aucun carré rentré.</p>}
+          </div>
+        </div>
+      )}
       {showDiscardPile && (
         <div className="absolute inset-0 bg-black/70 z-40 flex items-center justify-center p-4" onClick={() => setShowDiscardPile(false)}>
           <div className="bg-slate-800 rounded-2xl p-4 max-w-md w-full max-h-[80vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
@@ -606,6 +698,8 @@ export default function GameScreen({ config, playerNames, onBack, initialState, 
             </div>
             <DiscardSpread cards={currentDiscardPile} eventId={publicView.lastDiscard?.id} faceDown={gameState.lastDiscardFaceDown}
               canChop={!awaitingPass&&isMyTurn&&phase==='must_draw'&&!!availableActions?.canChop} onChop={actions.chop} onInspect={()=>setShowDiscardPile(true)}/>
+            {/* A carré returned to the base is visible in the discard area straight away. */}
+            <BasePile cards={publicView.baseCards ?? []} onInspect={()=>setShowBasePile(true)}/>
           </div>
 
       {gameState.phase === 'playing' && (
@@ -646,15 +740,23 @@ export default function GameScreen({ config, playerNames, onBack, initialState, 
               {chopMustOpen && <span className="text-amber-400 text-[11px] self-center whitespace-nowrap font-bold">✋ CHOP : vous devez ouvrir ou annuler</span>}
               {gameState.turnState?.mandatoryChopCardId && !hasPlayedMandatoryChopCard(gameState) && <span className="text-purple-300 text-[11px] self-center whitespace-nowrap font-bold">La carte CHOP doit être jouée dans une combinaison</span>}
               {availableActions?.canCancelChop && <button onClick={actions.cancelChop} className="btn-secondary min-h-10 text-xs px-3 py-1.5 whitespace-nowrap flex-shrink-0">↩️ Annuler CHOP</button>}
-              {detectedType && <button onClick={handleAutoPlace} className="btn-primary text-xs px-3 py-1.5 whitespace-nowrap flex-shrink-0">🃏 Poser {getCombinationClassLabel({ id: 'preview', type: detectedType, cards: selCards, ownerId: hp.id })}{pendingJokerPlacement ? ` (Joker→${jokerPlacementLabel(pendingJokerPlacement)})` : ''}</button>}
-              {hp.status !== 'opened' && humanCombos.length > 0 && <span className="text-[10px] text-slate-300">{openingRequirements(gameState,hp.id).waived?'Équipier ouvert : ouverture sans seuil.':openingStatusText({opened:false,naturalScore,vierge:viergeThreshold,suite:gameState.suite,total:liveTotal,hasCombos:true})}</span>}
+              {multiPlacements && <button onClick={handlePlaceAll} className="btn-primary text-xs px-3 py-1.5 whitespace-nowrap flex-shrink-0" data-place-all-combinations>
+                🃏 Poser les combinaisons ({multiPlacements.length})
+              </button>}
+              {detectedType && !multiPlacements && <button onClick={handleAutoPlace} className="btn-primary text-xs px-3 py-1.5 whitespace-nowrap flex-shrink-0">🃏 Poser {getCombinationClassLabel({ id: 'preview', type: detectedType, cards: selCards, ownerId: hp.id })}{pendingJokerPlacement ? ` (Joker→${jokerPlacementLabel(pendingJokerPlacement)})` : ''}</button>}
+              {hp.status !== 'opened' && humanCombos.length > 0 && (() => {
+                const status = openingRequirements(gameState,hp.id).waived
+                  ? 'Équipier ouvert : ouverture sans seuil.'
+                  : openingStatusText({opened:false,naturalScore,vierge:viergeThreshold,suite:gameState.suite,total:liveTotal,hasCombos:true});
+                return status ? <span className="text-[10px] text-slate-300">{status}</span> : null;
+              })()}
               {hp.status !== 'opened' && humanCombos.length > 0 && <button onClick={actions.confirmOpening} className="btn-primary px-3 py-1.5">Valider l’ouverture</button>}
               {[...gameState.tableCombinations,...draftHumanCombos].filter(combo => selCards.length > 0 && canPlayerRecoverJoker(gameState,hp.id,combo) && canRecoverJoker(combo, selCards)).map(combo => <button key={`recover-${combo.id}`} onClick={() => actions.recoverJokerAction(combo.id, selectedCards)} className="btn-primary px-3 py-1.5">Récupérer le Joker</button>)}
               {hp.status !== 'opened' && humanCombos.length > 0 && <button onClick={actions.takeBack} className="btn-secondary text-xs px-3 py-1.5 whitespace-nowrap flex-shrink-0">↩️ Reprendre</button>}
               {returnableCarreIds.length > 0 && <button onClick={() => actions.returnCarre(returnableCarreIds[0])} className="text-xs px-3 py-1.5 whitespace-nowrap flex-shrink-0 rounded-lg font-bold bg-gradient-to-r from-amber-500 to-yellow-500 text-slate-900">📦 Rentrer le carré dans la base</button>}
-              {selCards.length >= 3 && !detectedType && <span className="text-red-400 text-[10px] self-center">Invalide</span>}
+              {selCards.length >= 3 && !detectedType && !multiPlacements && <span className="text-red-400 text-[10px] self-center">Invalide</span>}
               {selectedCards.length === 1 && hp.hand.find(c => c.id === selectedCards[0])?.isJoker && <button onClick={() => actions.discardCard(selectedCards[0], false)} className="btn-danger text-xs px-3 py-1.5 whitespace-nowrap flex-shrink-0 bg-gradient-to-r from-purple-600 to-purple-800">🃏 RJ</button>}
-              {selectedCards.length >= 2 && <button onClick={lockSelection} className="text-xs px-3 py-1.5 whitespace-nowrap flex-shrink-0 rounded-lg font-bold bg-gradient-to-r from-amber-500 to-yellow-500 text-slate-900">🔒 Verrouiller la sélection ({selectedCards.length})</button>}
+              {selectedCards.length >= MIN_LOCK_SIZE && <button onClick={lockSelection} className="text-xs px-3 py-1.5 whitespace-nowrap flex-shrink-0 rounded-lg font-bold bg-gradient-to-r from-amber-500 to-yellow-500 text-slate-900">🔒 Verrouiller la sélection ({selectedCards.length})</button>}
               {selectedCards.length > 0 && <button onClick={actions.clearSelection} className="btn-secondary text-xs px-2 py-1.5 flex-shrink-0">✕</button>}
             </>)}
             {!isMyTurn && canReport && <span className="text-[10px] text-slate-400 whitespace-nowrap">Cliquez sur un nom adverse pour le signaler</span>}
@@ -668,6 +770,7 @@ export default function GameScreen({ config, playerNames, onBack, initialState, 
             onLockGroup={lockGroup}
             onSelectCard={isMyTurn ? actions.selectCard : () => {}}
             onSelectGroup={isMyTurn ? handleSelectGroup : () => {}}
+            onAddToLockedSet={isMyTurn ? extendLockedSet : undefined}
             disabled={dealing || !isMyTurn || phase === 'must_draw'}
             sortMode={sortMode} onSortChange={handleSortChange} onReorder={handleReorder}
             onCardDragStart={canAct ? onCardDragStart : undefined}

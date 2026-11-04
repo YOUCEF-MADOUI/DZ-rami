@@ -1,51 +1,100 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { GameConfig, INITIAL_THRESHOLDS } from '@/game/core/types';
+
+/** What the setup form holds, kept by the page so opening the rules never resets it. */
+export interface HomeDraft {
+  playerCount: 2 | 3 | 4 | 5;
+  teams: boolean;
+  names: string[];
+}
 
 interface Props {
   onOnline?: () => void;
-  initialMode?: 'menu' | 'multi';
-  onStartTeams?: () => void;
+  initialMode?: 'menu' | 'solo' | 'multi';
+  draft?: HomeDraft | null;
+  onDraftChange?: (draft: HomeDraft) => void;
   onResume?: () => void;
-  onStartSolo: (playerCount: 2 | 3 | 4 | 5) => void;
+  /** `teams` selects the 2-versus-2 variant, which always seats 4 players. */
+  onStartSolo: (playerCount: 2 | 3 | 4 | 5, teams?: boolean) => void;
   onStartMulti: (playerCount: 2 | 3 | 4 | 5, names: string[]) => void;
   onSettings: () => void;
   config: GameConfig;
 }
 
-export default function HomeScreen({ onStartSolo, onStartMulti, onSettings, config, onResume, onStartTeams, onOnline, initialMode='menu' }: Props) {
+export default function HomeScreen({ onStartSolo, onStartMulti, onSettings, config, onResume, onOnline, initialMode='menu', draft, onDraftChange }: Props) {
   const [mode, setMode] = useState<'menu' | 'solo' | 'multi'>(initialMode);
-  const [playerCount, setPlayerCount] = useState<2 | 3 | 4 | 5>(config.playerCount);
-  const [names, setNames] = useState<string[]>(['', '', '', '', '']);
+  const [playerCount, setPlayerCount] = useState<2 | 3 | 4 | 5>(draft?.playerCount ?? config.playerCount);
+  const [teams, setTeams] = useState(Boolean(draft?.teams));
+  const [names, setNames] = useState<string[]>(draft?.names ?? ['', '', '', '', '']);
+
+  // The page keeps the form so "← Changer de table" restores it untouched.
+  useEffect(() => {
+    onDraftChange?.({ playerCount, teams, names });
+  }, [playerCount, teams, names, onDraftChange]);
 
   if (mode === 'solo') {
+    /**
+     * Everyone plays against the AI. The 2v2 variant is one more way to choose
+     * the table, so it belongs here with the player counts, not in the main menu.
+     */
+    const soloOptions: { key: string; label: string; count: 2 | 3 | 4 | 5; teams: boolean; hint?: string }[] = [
+      { key: 'solo-2', label: '2 Joueurs', count: 2, teams: false },
+      { key: 'solo-3', label: '3 Joueurs', count: 3, teams: false },
+      { key: 'solo-4', label: '4 Joueurs', count: 4, teams: false },
+      {
+        key: 'solo-4-teams',
+        label: '4 Joueurs — 2 contre 2',
+        count: 4,
+        teams: true,
+        hint: '2 équipes de 2 · votre partenaire est assis face à vous',
+      },
+      { key: 'solo-5', label: '5 Joueurs', count: 5, teams: false },
+    ];
+    const choose = (option: (typeof soloOptions)[number]) => {
+      setPlayerCount(option.count);
+      setTeams(option.teams);
+    };
     return (
-      <div className="h-full flex flex-col items-center justify-center p-6 bg-gradient-to-b from-slate-900 via-emerald-950 to-slate-900">
-        <h2 className="text-2xl font-bold text-amber-400 mb-6">Mode Solo</h2>
+      <div className="h-full flex flex-col items-center justify-start p-6 pt-6 bg-gradient-to-b from-slate-900 via-emerald-950 to-slate-900 overflow-y-auto">
+        <h2 className="text-2xl font-bold text-amber-400 mb-4">Mode Solo</h2>
         <p className="text-slate-300 mb-4 text-center">Choisissez le nombre de joueurs</p>
-        
-        <div className="grid grid-cols-2 gap-3 mb-8 w-full max-w-xs">
-          {([2, 3, 4, 5] as const).map(n => (
-            <button
-              key={n}
-              onClick={() => setPlayerCount(n)}
-              className={`p-4 rounded-xl text-lg font-bold transition-all ${
-                playerCount === n
-                  ? 'bg-amber-500 text-white shadow-lg shadow-amber-500/30'
-                  : 'bg-slate-700 text-slate-300 hover:bg-slate-600'
-              }`}
-            >
-              {n} Joueurs
-            </button>
-          ))}
+
+        <div className="w-full max-w-xs space-y-2.5 mb-4">
+          {soloOptions.map(option => {
+            const selected = option.teams ? teams : playerCount === option.count && !teams;
+            return (
+              <button
+                key={option.key}
+                onClick={() => choose(option)}
+                aria-pressed={selected}
+                className={`w-full px-4 py-3 rounded-xl font-bold transition-all flex flex-col items-center gap-0.5 ${
+                  selected
+                    ? 'bg-amber-500 text-white shadow-lg shadow-amber-500/30'
+                    : 'bg-slate-700 text-slate-300 hover:bg-slate-600'
+                }`}
+              >
+                <span className="text-lg leading-tight">{option.label}</span>
+                {option.hint && (
+                  <span className={`text-[11px] font-normal ${selected ? 'text-amber-50/90' : 'text-slate-400'}`}>
+                    {option.hint}
+                  </span>
+                )}
+              </button>
+            );
+          })}
         </div>
 
-        <div className="text-center mb-6 text-sm text-slate-400">
+        <div className="text-center mb-5 text-sm text-slate-400 space-y-1">
+          <p>{teams ? 'Variante 2 contre 2 · 4 joueurs' : `Partie classique · ${playerCount} joueurs`}</p>
           <p>Seuil: {INITIAL_THRESHOLDS[playerCount]}</p>
         </div>
 
-        <button onClick={() => onStartSolo(playerCount)} className="btn-primary w-full max-w-xs text-lg py-3 mb-3">
+        <button
+          onClick={() => onStartSolo(playerCount, teams)}
+          className="btn-primary w-full max-w-xs text-lg py-3 mb-3"
+        >
           🎮 Commencer
         </button>
         <button onClick={() => setMode('menu')} className="btn-secondary w-full max-w-xs">
@@ -130,7 +179,6 @@ export default function HomeScreen({ onStartSolo, onStartMulti, onSettings, conf
 
       {/* Menu Buttons */}
       <div className="w-full max-w-xs space-y-3">
-        {onStartTeams&&<button onClick={onStartTeams} className="btn-primary w-full py-3">4 joueurs — 2 contre 2</button>}
         {onResume&&<button onClick={onResume} className="btn-primary w-full py-3">▶ Continuer la partie solo</button>}
         <button
           onClick={() => setMode('solo')}

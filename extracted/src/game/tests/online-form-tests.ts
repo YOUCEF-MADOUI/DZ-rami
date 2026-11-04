@@ -121,6 +121,99 @@ try {
     assert(!c.partitioned);
     assert(c.httpOnly);
   });
+  test("Same-origin POST without an Origin header is accepted (browser fetch)", () => {
+    delete process.env.MULTIPLAYER_PUBLIC_ORIGIN;
+    requireOrigin(
+      new NextRequest("http://localhost:3000/api/multiplayer", {
+        headers: { host: "localhost:3000", "sec-fetch-site": "same-origin" },
+      }),
+    );
+    requireOrigin(
+      new NextRequest("https://preview.e2b.app/api/multiplayer", {
+        headers: { host: "preview.e2b.app", "sec-fetch-site": "none" },
+      }),
+    );
+  });
+  test("Older browsers fall back to a same-host Referer, never a foreign one", () => {
+    delete process.env.MULTIPLAYER_PUBLIC_ORIGIN;
+    requireOrigin(
+      new NextRequest("https://game.example/api/multiplayer", {
+        headers: { host: "game.example", referer: "https://game.example/menu" },
+      }),
+    );
+    assert.throws(
+      () =>
+        requireOrigin(
+          new NextRequest("https://game.example/api/multiplayer", {
+            headers: {
+              host: "game.example",
+              referer: "https://attacker.example/page",
+            },
+          }),
+        ),
+      /Origine non autorisée/,
+    );
+  });
+  test("Cross-site and unverifiable requests stay refused", () => {
+    delete process.env.MULTIPLAYER_PUBLIC_ORIGIN;
+    assert.throws(
+      () =>
+        requireOrigin(
+          new NextRequest("https://game.example/api/multiplayer", {
+            headers: { host: "game.example", "sec-fetch-site": "cross-site" },
+          }),
+        ),
+      /Origine non autorisée/,
+    );
+    assert.throws(
+      () =>
+        requireOrigin(
+          new NextRequest("https://game.example/api/multiplayer", {
+            headers: { host: "game.example", origin: "null" },
+          }),
+        ),
+      /Origine non autorisée/,
+    );
+  });
+  test("Forwarded HTTPS preview gets a Secure partitioned cookie without Origin", () => {
+    delete process.env.MULTIPLAYER_PUBLIC_ORIGIN;
+    const request = new NextRequest("http://localhost:3000/api/multiplayer", {
+      headers: {
+        host: "8081-abc.e2b.app",
+        "sec-fetch-site": "same-origin",
+        "x-forwarded-proto": "https",
+      },
+    });
+    requireOrigin(request);
+    const cookie = sessionCookieOptions(request);
+    assert.equal(cookie.secure, true);
+    assert.equal(cookie.sameSite, "none");
+    assert(cookie.partitioned);
+  });
+  test("Forwarded public host is accepted when the proxy rewrites Host", () => {
+    delete process.env.MULTIPLAYER_PUBLIC_ORIGIN;
+    requireOrigin(
+      new NextRequest("http://localhost:3000/api/multiplayer", {
+        headers: {
+          host: "localhost:3000",
+          "x-forwarded-host": "8081-sandbox.e2b.app",
+          origin: "https://8081-sandbox.e2b.app",
+        },
+      }),
+    );
+    assert.throws(
+      () =>
+        requireOrigin(
+          new NextRequest("http://localhost:3000/api/multiplayer", {
+            headers: {
+              host: "localhost:3000",
+              origin: "https://attacker.example",
+            },
+          }),
+        ),
+      /Origine non autorisée/,
+    );
+  });
   test("CSRF origin checks are preserved, including configured production origin", () => {
     assert.throws(() =>
       requireOrigin(

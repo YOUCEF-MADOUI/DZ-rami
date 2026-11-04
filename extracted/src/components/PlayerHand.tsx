@@ -2,8 +2,8 @@
 import type { CSSProperties, PointerEvent as ReactPointerEvent } from 'react';
 import { useRef, useState, useEffect } from 'react';
 import { createPortal } from 'react-dom';
-import { GameCard } from '@/game/core/types';
-import { DetectedGroup, getDragBlock, GROUP_COLORS, moveBlock } from '@/game/core/hand-groups';
+import { GameCard, SUIT_SYMBOLS } from '@/game/core/types';
+import { DetectedGroup, getDragBlock, GROUP_COLORS, lockedSetExtensions, moveBlock } from '@/game/core/hand-groups';
 import { handLayout, insertionFromOffsets } from './presentation/hand-layout';
 import CardView from './CardView';
 export type SortMode = 'manual' | 'suit' | 'rank';
@@ -11,7 +11,11 @@ interface Props {
   cards: GameCard[]; selectedCards: string[]; groups: DetectedGroup[];
   lockedSetForCard?: (cardId: string) => string[] | null;
   onUnlockSet?: (cardId: string) => void; onLockGroup?: (cardIds: string[]) => void;
-  onSelectCard: (cardId: string) => void; onSelectGroup: (cardIds: string[]) => void;
+  onSelectCard: (cardId: string) => void;
+  /** `locked` means the cards belong to a frozen block: selection adds to the others. */
+  onSelectGroup: (cardIds: string[], locked?: boolean) => void;
+  /** Merge an adjacent card into a locked combination (the little arrow). */
+  onAddToLockedSet?: (cardId: string, setIds: string[]) => void;
   disabled?: boolean; sortMode: SortMode; onSortChange: (mode: SortMode) => void;
   onReorder: (blockIds: string[], toIndex: number) => void;
   onCardDragStart?: (cardId: string) => void; onCardDragEnd?: () => void;
@@ -23,7 +27,7 @@ interface Gesture {
   width:number; height:number; active:boolean; inHand:boolean; marginLeft:number;
 }
 export default function PlayerHand({cards,selectedCards,groups,lockedSetForCard,onUnlockSet,onLockGroup,
-  onSelectCard,onSelectGroup,disabled,sortMode,onSortChange,onReorder,onCardDragStart,onCardDragEnd,onTouchDrop}:Props) {
+  onSelectCard,onSelectGroup,onAddToLockedSet,disabled,sortMode,onSortChange,onReorder,onCardDragStart,onCardDragEnd,onTouchDrop}:Props) {
   const containerRef=useRef<HTMLDivElement>(null);
   const gesture=useRef<Gesture|null>(null);
   const suppressClick=useRef(false);
@@ -32,6 +36,9 @@ export default function PlayerHand({cards,selectedCards,groups,lockedSetForCard,
   const [destination,setDestination]=useState<number|null>(null);
   const lockedSets=cards.map(c=>lockedSetForCard?.(c.id)).filter((s):s is string[]=>!!s);
   const baseLayout=handLayout(cards,lockedSets,groups);
+  const uniqueLockedSets=Array.from(new Map(lockedSets.map(set=>[set.join('|'),set])).values());
+  // A neighbouring card that would extend a locked combination shows a small arrow.
+  const extensions=onAddToLockedSet?lockedSetExtensions(cards,uniqueLockedSets):[];
   const projectedIds=preview?.active && destination!==null ? moveBlock(cards.map(c=>c.id),preview.block,destination) : cards.map(c=>c.id);
   const byId=new Map(cards.map(c=>[c.id,c]));
   const projected=projectedIds.map(id=>byId.get(id)).filter((c):c is GameCard=>!!c);
@@ -57,7 +64,8 @@ export default function PlayerHand({cards,selectedCards,groups,lockedSetForCard,
   const select=(id:string)=>{
     if(disabled) return;
     const locked=lockedSetForCard?.(id);
-    if(locked) onSelectGroup(locked); else onSelectCard(id);
+    // Locked combinations are additive: several frozen blocks can be selected.
+    if(locked) onSelectGroup(locked,true); else onSelectCard(id);
   };
   const pointerDown=(event:ReactPointerEvent<HTMLDivElement>,card:GameCard)=>{
     if(event.button!==0 || gesture.current) return;
@@ -142,14 +150,36 @@ export default function PlayerHand({cards,selectedCards,groups,lockedSetForCard,
           const color=GROUP_COLORS[segment.colorIndex%GROUP_COLORS.length].band;
           return <div key={segment.ids.join('|')} data-hand-group={segment.ids.join('|')} className="hand-group"
             style={{left:`calc(var(--card-width) * ${left})`,width:`calc(var(--card-width) * ${width})`}}>
-            <button type="button" data-group-select title="Sélectionner cette combinaison" aria-label="Sélectionner cette combinaison"
-              disabled={disabled||!!preview} onClick={()=>onSelectGroup(segment.ids)} style={{color}} className="hand-group-select">Sélectionner</button>
+            <button type="button" data-group-select aria-pressed={segment.ids.every(id=>selectedCards.includes(id))}
+              title={segment.ids.every(id=>selectedCards.includes(id))?'Désélectionner cette combinaison':'Sélectionner cette combinaison'}
+              aria-label={segment.ids.every(id=>selectedCards.includes(id))?'Désélectionner cette combinaison':'Sélectionner cette combinaison'}
+              disabled={disabled||!!preview} onClick={()=>onSelectGroup(segment.ids,segment.locked)} style={{color}} className="hand-group-select">{segment.ids.every(id=>selectedCards.includes(id))?'Désélectionner':'Sélectionner'}</button>
             <button type="button" title={segment.locked?'Déverrouiller ces cartes':'Verrouiller cette combinaison'}
               onClick={()=>segment.locked?onUnlockSet?.(segment.ids[0]):onLockGroup?.(segment.ids)}
               className="hand-lock-control" style={{left:`calc(var(--card-width) * ${(layout.offsets[segment.end]-left+1)/2})`}} disabled={!!preview}>
               {segment.locked?<svg aria-label="Groupe verrouillé" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="5" y="10" width="14" height="11" rx="2"/><path d="M8 10V6a4 4 0 0 1 8 0v4"/></svg>:<span aria-hidden="true">⌄</span>}
             </button>
           </div>;
+        })}
+        {/* Add an adjacent card to a locked combination: one arrow per candidate. */}
+        {!preview&&extensions.map(extension=>{
+          const segment=layout.segments.find(g=>g.locked&&extension.setIds.every(id=>g.ids.includes(id)));
+          if(!segment)return null;
+          const card=byId.get(extension.cardId);
+          if(!card)return null;
+          const label=card.isJoker?'Joker':`${card.rank}${card.suit?SUIT_SYMBOLS[card.suit]:''}`;
+          const anchor=extension.side==='after'?layout.offsets[segment.end]+1:layout.offsets[segment.start];
+          return <button key={`extend-${extension.cardId}-${segment.ids[0]}`} type="button"
+            data-locked-extension data-extension-card={extension.cardId} data-extension-side={extension.side}
+            data-extension-type={extension.type}
+            title={`Ajouter ${label} à la combinaison verrouillée`}
+            aria-label={`Ajouter ${label} à la combinaison verrouillée (${extension.type==='carre'?'carré':'tierce'})`}
+            disabled={disabled}
+            onClick={event=>{event.stopPropagation();onAddToLockedSet?.(extension.cardId,extension.setIds);}}
+            className="hand-locked-extension"
+            style={{left:`calc(var(--card-width) * ${anchor} - 10px)`}}>
+            {extension.side==='after'?'◀':'▶'}
+          </button>;
         })}
       </div>
     </div>

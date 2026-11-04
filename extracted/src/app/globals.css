@@ -26,6 +26,35 @@ html, body {
   overflow: hidden;
   height: 100%;
   width: 100%;
+  /* Android WebView: no automatic font inflation, no grey flash on load. */
+  -webkit-text-size-adjust: 100%;
+  background: #0f172a;
+}
+
+/*
+ * Application shell.
+ *
+ * `100dvh` follows the dynamic viewport: on Android the system bars (and the
+ * keyboard) change it, while `100vh` keeps the layout taller than the screen
+ * and hides the bottom controls. The `100vh` line below is the fallback for
+ * old WebViews that do not know `dvh` yet.
+ */
+.app-shell {
+  height: 100vh;
+  height: 100dvh;
+}
+
+/*
+ * Safe areas (notch, rounded corners, gesture bar). Zero on a desktop browser,
+ * so the web layout is untouched; inside the Android shell the bottom menu and
+ * the info bar are never hidden under the navigation bar.
+ */
+body {
+  padding-top: env(safe-area-inset-top, 0px);
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+  padding-left: env(safe-area-inset-left, 0px);
+  padding-right: env(safe-area-inset-right, 0px);
+  box-sizing: border-box;
 }
 
 @keyframes dealCard {
@@ -307,6 +336,19 @@ html, body {
 .hand-group-select { max-width: calc(100% - 26px); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; position: absolute; left: 0; top: 0; padding: 0 2px; font-size: 9px; line-height: 18px; background: transparent; }
 .meld-fan .card > div:first-child { left: 0; font-size: calc(var(--fan-width) * 0.17); }
 .meld-fan .card > div:first-child svg { width: calc(var(--fan-step) - 2px); height: calc(var(--fan-step) - 2px); }
+/* Small arrow between a locked combination and a neighbouring card that can
+   join it. Presentation only: clicking merges the two into one locked block. */
+.hand-locked-extension {
+  position:absolute; top:-21px; z-index:60;
+  display:flex; align-items:center; justify-content:center;
+  width:20px; height:20px; border-radius:50%;
+  background:#fbbf24; color:#0f172a; border:1px solid #fde68a;
+  font-size:11px; font-weight:900; line-height:1;
+  box-shadow:0 2px 6px #0007; cursor:pointer;
+}
+.hand-locked-extension:hover { background:#fcd34d; transform:scale(1.08); }
+.hand-locked-extension:disabled { opacity:.4; cursor:not-allowed; }
+.hand-locked-extension:focus-visible { outline:2px solid #f8fafc; outline-offset:1px; }
 .hand-lock-control {
   position: absolute; top: 18px; transform: translateX(-50%);
   display: flex; align-items: center; justify-content: center;
@@ -368,10 +410,32 @@ html, body {
 /* Table area is reserved for public melds; the discard is below the local hand. */
 .opponent-strip { display:grid; grid-template-columns:repeat(auto-fit,minmax(120px,1fr)); gap:6px; margin:0 4px 10px; }
 .public-meld-table { display:flex; flex-wrap:wrap; gap:10px; align-content:flex-start; align-items:flex-start; padding:8px; }
+/* One box per player: all the melds of a player stay side by side, and the
+   boxes themselves follow the order of the openings of the round. */
+.meld-group {
+  display:flex; flex-direction:column; gap:4px;
+  /* Size to its own content (never squeezed); wrapping happens between groups. */
+  flex:0 0 auto; width:max-content; max-width:100%; min-width:0;
+  padding:4px 6px 6px;
+  border:1px solid color-mix(in srgb, var(--owner-color, #94a3b8) 55%, transparent);
+  border-radius:10px;
+  background:color-mix(in srgb, var(--owner-color, #94a3b8) 10%, transparent);
+  align-self:flex-start;
+}
+.meld-group-heading { display:flex; align-items:center; gap:4px; min-width:0; font-size:9px; font-weight:700; line-height:1.1; color:#e2e8f0; }
+.meld-group-name { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:9em; color:var(--owner-color, #e2e8f0); }
+.meld-group-team { font-size:8px; font-weight:700; color:#cbd5e1; border:1px solid #ffffff33; border-radius:5px; padding:0 3px; white-space:nowrap; }
+.meld-group-melds { display:flex; flex-wrap:wrap; align-items:flex-start; gap:6px; min-width:0; }
 .player-color-dot { display:inline-block; width:8px; height:8px; border-radius:50%; flex-shrink:0; }
 .game-hand-panel { flex-shrink:0; }
 .discard-dock { flex-shrink:0; height:clamp(100px,16vh,160px); }
 .discard-dock .discard-surface { min-height:0; }
+/* Carrés returned to the base: shown face up in the discard dock, immediately,
+   so the four cards never look like they disappeared from the game. */
+.base-pile { flex-shrink:0; display:flex; flex-direction:column; align-items:center; gap:2px; padding:2px 4px; border-radius:10px; border:1px solid #f59e0b66; background:#78350f33; }
+.base-pile-cards { display:flex; align-items:center; gap:6px; max-width:min(46vw,320px); overflow-x:auto; padding-bottom:2px; }
+.base-square { display:flex; gap:1px; padding:2px; border-radius:6px; background:#00000055; border:1px solid #fbbf2455; }
+.base-pile-label { font-size:9px; font-weight:700; color:#fcd34d; white-space:nowrap; }
 @media (max-height:650px) {
   .game-hand-panel .hand-layout { --card-width:48px; --card-height:70px; }
   .game-hand-panel .hand-fan { padding-top:16px; padding-bottom:44px; }

@@ -28,6 +28,12 @@ export interface GameActions {
   chop: () => void;
   cancelChop: () => void;
   place: (cardIds: string[], type: 'tierce' | 'carre', jokerPlacement?: JokerPlacement) => void;
+  /**
+   * Lay several combinations down at once (a multi-selection). Applied
+   * sequentially on the authoritative engine: if the engine refuses ONE of them,
+   * nothing at all is committed.
+   */
+  placeCombinations: (placements: { cardIds: string[]; type: 'tierce' | 'carre'; jokerPlacement?: JokerPlacement }[]) => boolean;
   addToCombo: (cardId: string, comboId: string, side?: JokerExtensionSide) => void;
   recoverJokerAction: (comboId: string, replacementCardId: string | string[]) => void;
   reportFaultAgainst: (accusedId: string, type: FaultType) => { valid: boolean; message: string };
@@ -151,6 +157,20 @@ export function useGame(
     setSelectedCards([]);
   }, [gameState]);
 
+  const placeCombinations = useCallback((placements: { cardIds: string[]; type: 'tierce' | 'carre'; jokerPlacement?: JokerPlacement }[]) => {
+    if (!gameState || placements.length === 0) return false;
+    let state = gameState;
+    for (const placement of placements) {
+      const next = placeCombination(state, placement.cardIds, placement.type, placement.jokerPlacement);
+      // An unchanged state is the engine's refusal: never commit a partial batch.
+      if (next === state) return false;
+      state = next;
+    }
+    setGameState(state);
+    setSelectedCards([]);
+    return true;
+  }, [gameState]);
+
   const returnCarre = useCallback((comboId: string) => {
     if (!gameState) return;
     const state = returnCarreToBase(gameState, comboId);
@@ -217,6 +237,7 @@ export function useGame(
     chop,
     cancelChop,
     place,
+    placeCombinations,
     addToCombo,
     recoverJokerAction,
     reportFaultAgainst,

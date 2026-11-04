@@ -1,22 +1,57 @@
 import { NextRequest, NextResponse } from "next/server";
 import { OnlineError } from "./errors";
 export const COOKIE = "dz-rami-online";
+/**
+ * CSRF guard.
+ *
+ * A cross-origin browser request always carries `Origin` (form posts included),
+ * so an explicit origin must match the serving host or the configured public
+ * origin. Same-origin requests, however, are sent *without* `Origin` by modern
+ * browsers — this app's own POST fetches included — so they are recognised by
+ * the `Sec-Fetch-Site` metadata, with a same-host `Referer` as the fallback for
+ * browsers that do not send it. Anything unverifiable is still refused.
+ */
 export function requireOrigin(request: NextRequest) {
   const origin = request.headers.get("origin");
   const allowed = process.env.MULTIPLAYER_PUBLIC_ORIGIN;
-  const valid =
-    origin &&
-    (allowed
-      ? origin === new URL(allowed).origin
-      : new URL(origin).host === request.headers.get("host"));
-  if (!valid) throw new OnlineError("Origine non autorisée.", 403);
+  const hosts = [
+    request.headers.get("host"),
+    // A preview/reverse proxy may rewrite `Host` but keeps the public one here.
+    request.headers.get("x-forwarded-host")?.split(",")[0]?.trim(),
+  ].filter((host): host is string => !!host);
+  if (origin) {
+    let valid = false;
+    try {
+      valid = allowed
+        ? origin === new URL(allowed).origin
+        : hosts.includes(new URL(origin).host);
+    } catch {
+      // `Origin: null` (sandboxed document) or a malformed value: refuse.
+      valid = false;
+    }
+    if (!valid) throw new OnlineError("Origine non autorisée.", 403);
+    return;
+  }
+  const site = request.headers.get("sec-fetch-site");
+  if (site === "same-origin" || site === "none") return;
+  const referer = request.headers.get("referer");
+  if (!site && referer && hosts.length) {
+    try {
+      if (hosts.includes(new URL(referer).host)) return;
+    } catch {
+      // Malformed Referer: fall through to the refusal below.
+    }
+  }
+  throw new OnlineError("Origine non autorisée.", 403);
 }
 /** Call only after requireOrigin. HTTPS previews need a cross-site, partitioned cookie. */
 export function sessionCookieOptions(request: NextRequest) {
   const secure =
     request.nextUrl.protocol === "https:" ||
     process.env.MULTIPLAYER_PUBLIC_ORIGIN?.startsWith("https:") === true ||
-    request.headers.get("origin")?.startsWith("https://") === true;
+    request.headers.get("origin")?.startsWith("https://") === true ||
+    // Preview proxies terminate TLS and forward the original scheme.
+    request.headers.get("x-forwarded-proto")?.split(",")[0].trim() === "https";
   return {
     httpOnly: true,
     secure,

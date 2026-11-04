@@ -1,5 +1,8 @@
 # 4 joueurs — 2 contre 2
 
+L'option se choisit dans **Mode Solo**, avec les autres formats de table :
+2 Joueurs, 3 Joueurs, 4 Joueurs, **4 Joueurs — 2 contre 2**, 5 Joueurs.
+
 ## Isolation des règles
 
 `GameConfig.variant = 'teams'` exige quatre sièges. Une valeur absente ou
@@ -15,6 +18,16 @@
 - Les points d'une manche sont stockés une seule fois, sous `team-1`/`team-2`.
   Les champs de score des partenaires reflètent ce total pour compatibilité ;
   ils ne sont jamais additionnés pour calculer le score de l'équipe.
+
+## Carré rentré dans la base
+
+Un vrai carré (quatre cartes naturelles) peut être rentré dans la base par le
+joueur responsable (`carreResponsable`). Les quatre cartes étaient déjà
+publiques sur la table : elles sont donc **affichées immédiatement, face visible,
+dans la zone de défausse** (composant `BasePile`, compteur « Base · N »), sans
+animation ni délai. Un clic ouvre le détail en lecture seule ; la base n'est
+jamais mélangée à la défausse courante ni à son historique. La projection
+publique expose `baseCards` en plus de `baseCount`, sans révéler aucune main.
 
 Pour des adversaires ayant 4 et 2 cartes, les scores vérifiés sont :
 
@@ -52,8 +65,10 @@ privés. Le RS est expurgé, y compris pour les anciennes sauvegardes. Le compos
 `OpponentHand` reçoit seulement un nom et un nombre, jamais des GameCard.
 
 **Ce dépôt n'a pas de serveur multijoueur autoritaire ni d'authentification de
-joueurs distants.** Le menu 2 contre 2 lance un joueur local avec un partenaire
-IA et deux adversaires IA. Le moteur local et la sauvegarde solo contiennent
+joueurs distants.** L'option « 4 Joueurs — 2 contre 2 » de l'écran **Mode Solo**
+lance un joueur local avec un partenaire IA et deux adversaires IA ; elle ne
+figure plus dans le menu général, qui ne garde que Mode Solo, Multijoueur et
+Paramètres. Le moteur local et la sauvegarde solo contiennent
 l'état complet nécessaire à la simulation. La projection/les dos ne rendent
 pas ce moteur local inviolable face aux outils de développement du navigateur.
 

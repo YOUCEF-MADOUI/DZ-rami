@@ -18,7 +18,10 @@ export function projectPlayerView(state:GameState,viewerId:string) {
     localHand:state.players.find(p=>p.id===viewerId)!.hand.map(c=>({...c})),
     tableCombinations:structuredClone(state.tableCombinations) as Combination[],
     discardPile:state.discardPile.map((c,i)=>state.lastDiscardFaceDown&&i===state.discardPile.length-1?null:{...c}),
-    deckCount:state.deck.length,baseCount:state.basePile.length,currentPlayerId:state.players[state.currentPlayerIndex].id,
+    deckCount:state.deck.length,baseCount:state.basePile.length,
+    // Carrés returned to the base: already public when they were on the table.
+    baseCards:structuredClone(state.basePile) as GameCard[],
+    currentPlayerId:state.players[state.currentPlayerIndex].id,
     firstPlayerId:state.players[state.firstPlayerIndex].id,lastDiscard};
 }
 

@@ -9,7 +9,7 @@ import {
   type JokerPlacement,
   SUIT_SYMBOLS,
 } from "@/game/core/types";
-import { detectHandGroups, moveBlock } from "@/game/core/hand-groups";
+import { detectHandGroups, moveBlock, MIN_LOCK_SIZE } from "@/game/core/hand-groups";
 import {
   detectCombinationType,
   resolveJokerPlacement,
@@ -21,9 +21,12 @@ import { getCombinationClassLabel } from "@/game/core/validation";
 import {
   tableCards,
   tableCombinations,
+  groupTableCombinations,
   playerColor,
 } from "../presentation/table-order";
+import { isTeamMode, teamOf, TEAM_NAMES } from "@/game/core/team-rules";
 import { sortCards } from "../GameScreen";
+import { planSelectionPlacement } from "@/game/core/selection-groups";
 import PlayerHand, { type SortMode } from "../PlayerHand";
 import CardView from "../CardView";
 import OpponentHand from "../OpponentHand";
@@ -31,6 +34,7 @@ import DiscardSpread from "../DiscardSpread";
 import StockEffects from "../StockEffects";
 import DiscardEffects from "../DiscardEffects";
 import FittedTable from "../FittedTable";
+import BasePile from "../BasePile";
 import ScoreBoard from "../ScoreBoard";
 /** Same label the local screen shows for a chosen Joker slot. */
 function jokerPlacementLabel(placement: JokerPlacement): string {
@@ -82,7 +86,13 @@ export default function OnlineGameScreen({
         Array.isArray(saved.locks) &&
         ["rank", "suit", "manual"].includes(saved.mode)
       )
-        return saved;
+        // A restored lock must still hold a real combination.
+        return {
+          ...saved,
+          locks: (saved.locks as string[][]).filter(
+            (ids) => Array.isArray(ids) && ids.length >= MIN_LOCK_SIZE,
+          ),
+        };
     } catch {}
     return { order: [], locks: [], mode: "rank" };
   });
@@ -90,6 +100,7 @@ export default function OnlineGameScreen({
     [scores, setScores] = useState(false),
     [zoom, setZoom] = useState<Combination[] | null>(null),
     [inspect, setInspect] = useState(false),
+    [baseInspect, setBaseInspect] = useState(false),
     [report, setReport] = useState(""),
     [fault, setFault] = useState<FaultType>("playable_discard"),
     [joker, setJoker] = useState<{ card: GameCard; combo: Combination } | null>(
@@ -112,9 +123,10 @@ export default function OnlineGameScreen({
       : sortCards(game.localHand, view.mode);
   const selection = cards.filter((c) => selected.includes(c.id)),
     selectedIds = selection.map((c) => c.id);
+  // A lock always holds a real combination (three cards or more).
   const locks = view.locks
     .map((ids) => ids.filter((id) => byId.has(id)))
-    .filter((ids) => ids.length >= 2);
+    .filter((ids) => ids.length >= MIN_LOCK_SIZE);
   const mine =
       !spectator &&
       game.currentPlayerId === game.viewerId &&
@@ -127,6 +139,31 @@ export default function OnlineGameScreen({
   const pendingJokerPlacement = detectedType
     ? resolveJokerPlacement(selection, detectedType)
     : null;
+  /**
+   * Several combinations selected at once (locked blocks): the action bar shows
+   * "Poser les combinaisons" and each group is sent to the authoritative server.
+   */
+  const selectionPlacements =
+    selectedIds.length >= 3
+      ? planSelectionPlacement(cards, selectedIds, locks)
+      : null;
+  const multiPlacements =
+    selectionPlacements && selectionPlacements.length > 1
+      ? selectionPlacements
+      : null;
+  const placeAll = async () => {
+    if (!multiPlacements || !canPlay) return;
+    for (const placement of multiPlacements) {
+      const accepted = await send({
+        type: "place",
+        cardIds: placement.cardIds,
+        kind: placement.type,
+        jokerPlacement: placement.jokerPlacement,
+      });
+      if (!accepted) return; // the server refused: stop the batch here
+    }
+    setSelected([]);
+  };
   /**
    * Same behaviour as the local screen: the card just drawn from the deck is
    * selected automatically, so the next action applies to it straight away.
@@ -336,7 +373,31 @@ export default function OnlineGameScreen({
             aria-label="Combinaisons publiques"
             className="public-meld-table player-meld-zone"
           >
-            {tableCombinations(game.tableCombinations).map((c) => comboView(c))}
+            {groupTableCombinations(game.tableCombinations).map((group) => {
+              const owner = game.players.find((p) => p.id === group.ownerId);
+              const color = playerColor(game.players, group.ownerId);
+              const team =
+                owner && isTeamMode(game.config)
+                  ? TEAM_NAMES[teamOf(owner)].split(" · ")[0]
+                  : null;
+              return (
+                <div
+                  key={group.ownerId}
+                  className="meld-group"
+                  data-meld-group={group.ownerId}
+                  style={{ "--owner-color": color } as CSSProperties}
+                >
+                  <div className="meld-group-heading">
+                    <span className="player-color-dot" style={{ background: color }} />
+                    <span className="meld-group-name">{owner?.name ?? "Joueur"}</span>
+                    {team && <span className="meld-group-team">{team}</span>}
+                  </div>
+                  <div className="meld-group-melds">
+                    {group.combos.map((c) => comboView(c))}
+                  </div>
+                </div>
+              );
+            })}
           </section>
           {game.myDraft.length > 0 && (
             <section
@@ -413,6 +474,8 @@ export default function OnlineGameScreen({
           onChop={() => void act({ type: "chop" })}
           onInspect={() => setInspect(true)}
         />
+        {/* Same rule as the local screen: a returned carré is visible at once. */}
+        <BasePile cards={game.baseCards ?? []} onInspect={() => setBaseInspect(true)} />
       </div>
       {game.phase === "playing" && !spectator && (
         <section
@@ -488,7 +551,16 @@ export default function OnlineGameScreen({
                     ↩️ Annuler CHOP
                   </button>
                 )}
-                {detectedType && (
+                {multiPlacements && (
+                  <button
+                    onClick={() => void placeAll()}
+                    data-place-all-combinations
+                    className="btn-primary text-xs px-3 py-1.5 whitespace-nowrap flex-shrink-0"
+                  >
+                    🃏 Poser les combinaisons ({multiPlacements.length})
+                  </button>
+                )}
+                {detectedType && !multiPlacements && (
                   <button
                     onClick={() =>
                       void act({
@@ -514,7 +586,8 @@ export default function OnlineGameScreen({
                 )}
                 {!game.myDraft.length &&
                   selection.length >= 3 &&
-                  !detectedType && (
+                  !detectedType &&
+                  !multiPlacements && (
                     <span className="text-red-400 text-[10px] self-center">
                       Invalide
                     </span>
@@ -570,7 +643,7 @@ export default function OnlineGameScreen({
                     🃏 RJ
                   </button>
                 )}
-                {selection.length >= 2 && (
+                {selection.length >= MIN_LOCK_SIZE && (
                   <button
                     onClick={() =>
                       setView((v) => ({
@@ -615,7 +688,38 @@ export default function OnlineGameScreen({
                 s.includes(id) ? s.filter((i) => i !== id) : [...s, id],
               )
             }
-            onSelectGroup={setSelected}
+            onSelectGroup={(ids, locked) =>
+              setSelected((previous) => {
+                const allSelected = ids.every((id) => previous.includes(id));
+                if (allSelected) return previous.filter((id) => !ids.includes(id));
+                // A locked combination is additive: several frozen blocks at once.
+                if (locked)
+                  return [...previous.filter((id) => !ids.includes(id)), ...ids];
+                return ids;
+              })
+            }
+            onAddToLockedSet={(cardId, setIds) => {
+              const merged = cards
+                .map((card) => card.id)
+                .filter((id) => id === cardId || setIds.includes(id));
+              if (merged.length < 3) return;
+              setView((v) => ({
+                ...v,
+                locks: [
+                  ...v.locks
+                    .filter((lock) => !lock.some((id) => merged.includes(id)))
+                    .filter((lock) => lock.length >= MIN_LOCK_SIZE),
+                  merged,
+                ],
+              }));
+              // The selected block keeps the new card; otherwise selection is kept.
+              setSelected((previous) =>
+                setIds.every((id) => previous.includes(id)) &&
+                !previous.includes(cardId)
+                  ? [...previous, cardId]
+                  : previous,
+              );
+            }}
             lockedSetForCard={(id) => locks.find((l) => l.includes(id)) ?? null}
             onUnlockSet={(id) =>
               setView((v) => ({
@@ -623,15 +727,18 @@ export default function OnlineGameScreen({
                 locks: locks.filter((l) => !l.includes(id)),
               }))
             }
-            onLockGroup={(ids) =>
+            onLockGroup={(ids) => {
+              if (ids.length < MIN_LOCK_SIZE) return;
               setView((v) => ({
                 ...v,
                 locks: [
-                  ...locks.filter((l) => !l.some((id) => ids.includes(id))),
+                  ...locks
+                    .filter((l) => !l.some((id) => ids.includes(id)))
+                    .filter((l) => l.length >= MIN_LOCK_SIZE),
                   ids,
                 ],
-              }))
-            }
+              }));
+            }}
             onReorder={(block, to) =>
               setView((v) => ({
                 ...v,
@@ -791,6 +898,44 @@ export default function OnlineGameScreen({
             </button>
           </div>
         )}
+      {baseInspect && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4"
+          onClick={() => setBaseInspect(false)}
+        >
+          <div
+            className="max-h-[80vh] w-full max-w-md overflow-y-auto rounded-2xl bg-slate-800 p-4"
+            onClick={(e) => e.stopPropagation()}
+            data-base-modal
+          >
+            <div className="mb-3 flex items-center justify-between">
+              <h2 className="font-bold text-amber-400">
+                Base — carrés rentrés ({game.baseCards?.length ?? 0})
+              </h2>
+              <button
+                className="text-lg font-bold text-slate-400"
+                onClick={() => setBaseInspect(false)}
+              >
+                ✕
+              </button>
+            </div>
+            <div className="flex flex-wrap gap-3">
+              {Array.from(
+                { length: Math.ceil((game.baseCards?.length ?? 0) / 4) },
+                (_, squareIndex) => (
+                  <div key={squareIndex} className="flex gap-1" data-base-square>
+                    {(game.baseCards ?? [])
+                      .slice(squareIndex * 4, squareIndex * 4 + 4)
+                      .map((c) => (
+                        <CardView key={c.id} card={c} small />
+                      ))}
+                  </div>
+                ),
+              )}
+            </div>
+          </div>
+        </div>
+      )}
       {(zoom || inspect || report || joker) && (
         <div
           role="dialog"

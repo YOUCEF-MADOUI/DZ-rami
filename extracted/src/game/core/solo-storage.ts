@@ -1,4 +1,5 @@
 import { refreshSavedTeamRS } from './team-rules';
+import { MIN_LOCK_SIZE } from './hand-groups';
 import { GameState } from './types';
 import { KeyValueStorage } from './config-storage';
 import { assertDeckIntegrity } from './deck-integrity';
@@ -26,6 +27,9 @@ export function loadSoloSession(storage:KeyValueStorage): SoloSession|null {
     if(!view||!['rank','suit','manual'].includes(view.sortMode)||!Array.isArray(view.manualOrder)||!Array.isArray(view.lockedSets)||!Array.isArray(view.selectedCards))return null;
     if(!view.manualOrder.every(id=>typeof id==='string')||!view.selectedCards.every(id=>typeof id==='string')||!view.lockedSets.every(ids=>Array.isArray(ids)&&ids.every(id=>typeof id==='string')))return null;
     if(new Set(view.manualOrder).size!==view.manualOrder.length||new Set(view.selectedCards).size!==view.selectedCards.length||view.lockedSets.some(ids=>new Set(ids).size!==ids.length))return null;
+    // Older saves may hold two-card locks: a combination needs three cards, so
+    // those pairs are silently released instead of freezing the hand again.
+    view.lockedSets=view.lockedSets.filter(ids=>ids.length>=MIN_LOCK_SIZE);
     if(state.phase==='playing'&&(!state.turnState||state.turnState.playerId!==state.players[state.currentPlayerIndex]?.id))return null;
     assertDeckIntegrity(state);
     // Undo logic relies on shared action references; JSON alone cannot preserve them.

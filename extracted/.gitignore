@@ -29,3 +29,14 @@ next-env.d.ts
 
 # Authoritative multiplayer runtime state (never commit secrets or hands)
 .multiplayer/
+
+# Android shell (Capacitor): only the generated platform folder is local.
+/android/app/build/
+/android/build/
+/android/.gradle/
+/android/local.properties
+/android/app/release/
+*.jks
+*.keystore
+# Temporary folder used by scripts/build-mobile.mjs
+.mobile-api-parked/

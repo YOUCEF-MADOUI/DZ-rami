@@ -14,6 +14,12 @@ export interface DetectedGroup {
 const MAX_GROUP_SIZE = 5;
 const MIN_GROUP_SIZE = 3;
 /**
+ * A lock freezes a real combination, so it always holds at least three cards.
+ * Two cards are a plan, not a combination: keeping them locked only blocks the
+ * hand (and made pairs survive after a block was partly played).
+ */
+export const MIN_LOCK_SIZE = MIN_GROUP_SIZE;
+/**
  * Scan the hand (in its current visual order) and detect every maximal
  * run of ADJACENT cards that forms a valid combination.
  *
@@ -65,6 +71,69 @@ export function findGroupForIndex(groups: DetectedGroup[], index: number): Detec
 export function getDragBlock(cardId: string, lockedSet: string[] | null): string[] {
   return lockedSet?.includes(cardId) ? lockedSet : [cardId];
 }
+/** A card sitting right next to a locked combination and able to join it. */
+export interface LockedSetExtension {
+  /** Cards of the locked combination, in hand order. */
+  setIds: string[];
+  /** The adjacent card that can be added. */
+  cardId: string;
+  /** Which edge of the combination the card sits on. */
+  side: 'before' | 'after';
+  /** Presentation only: the valid combination the merge would create. */
+  type: 'tierce' | 'carre';
+}
+
+/**
+ * Cards adjacent to a locked hand combination that would extend it.
+ *
+ * A locked combination is a block the player froze; when a neighbouring card
+ * turns it into a valid (bigger) combination, the UI shows a small arrow to
+ * merge it. Pure presentation: no card leaves the hand, no rule is applied
+ * here — `detectCombinationType` is the single source of truth for validity,
+ * exactly like the automatic hints.
+ */
+export function lockedSetExtensions(
+  orderedHand: readonly GameCard[],
+  lockedSets: readonly (readonly string[])[],
+): LockedSetExtension[] {
+  const index = new Map(orderedHand.map((card, position) => [card.id, position]));
+  const valid = lockedSets
+    .map(ids => ids.filter(id => index.has(id)))
+    .filter(ids => ids.length >= MIN_LOCK_SIZE)
+    // A locked set is a contiguous block in the hand, like the layout expects.
+    .filter(ids => {
+      const positions = ids.map(id => index.get(id)!).sort((a, b) => a - b);
+      return positions.every((value, i) => i === 0 || value === positions[i - 1] + 1);
+    });
+  const frozen = new Set(valid.flat());
+  const extensions: LockedSetExtension[] = [];
+  for (const ids of valid) {
+    if (ids.length >= 5) continue; // a combination never exceeds five cards
+    const positions = ids.map(id => index.get(id)!).sort((a, b) => a - b);
+    const setCards = positions.map(position => orderedHand[position]);
+    const candidates: { position: number; side: 'before' | 'after' }[] = [
+      { position: positions[0] - 1, side: 'before' },
+      { position: positions[positions.length - 1] + 1, side: 'after' },
+    ];
+    for (const { position, side } of candidates) {
+      const candidate = orderedHand[position];
+      if (!candidate) continue;
+      if (frozen.has(candidate.id)) continue;
+      // Jokers stay free cards: their value is an explicit player choice.
+      if (candidate.isJoker) continue;
+      const type = detectCombinationType([...setCards, candidate]);
+      if (!type) continue;
+      extensions.push({
+        setIds: ids,
+        cardId: candidate.id,
+        side,
+        type,
+      });
+    }
+  }
+  return extensions;
+}
+
 /** Visual band colors, cycled per group */
 export const GROUP_COLORS = [
   { band: '#3b82f6', glow: 'rgba(59,130,246,0.45)' },   // blue

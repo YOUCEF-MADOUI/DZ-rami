@@ -12,9 +12,18 @@ interface Props {
   config: GameConfig;
   onSave: (config: GameConfig) => void;
   onBack: () => void;
+  /**
+   * Pre-game configuration: the same rules, but reached by "Commencer".
+   * The confirm button starts the game instead of only returning to the menu.
+   */
+  preGame?: {
+    /** Table that is about to be launched, e.g. "4 Joueurs — 2 contre 2". */
+    table: string;
+    detail?: string;
+  };
 }
 
-export default function SettingsScreen({ config, onSave, onBack }: Props) {
+export default function SettingsScreen({ config, onSave, onBack, preGame }: Props) {
   const [localConfig, setLocalConfig] = useState<GameConfig>({ ...config });
 
   const update = <K extends keyof GameConfig>(key: K, value: GameConfig[K]) => {
@@ -29,13 +38,27 @@ export default function SettingsScreen({ config, onSave, onBack }: Props) {
           ← Retour
         </button>
         <h2 className="text-xl font-bold text-amber-400 flex-1 text-center">
-          ⚙️ Paramètres
+          ⚙️ {preGame ? 'Paramètres de la partie' : 'Paramètres'}
         </h2>
         <div className="w-16" />
       </div>
 
       {/* Settings */}
       <div className="flex-1 overflow-y-auto p-4 space-y-6">
+        {preGame && (
+          <div className="bg-slate-800 border border-amber-900/60 rounded-lg p-3" data-pregame-summary>
+            <p className="text-[11px] font-bold uppercase tracking-wider text-amber-400">
+              Partie à lancer
+            </p>
+            <p className="text-white font-bold mt-0.5">{preGame.table}</p>
+            {preGame.detail && (
+              <p className="text-xs text-slate-400 mt-0.5">{preGame.detail}</p>
+            )}
+            <p className="text-xs text-slate-400 mt-1.5">
+              Réglez les règles ci-dessous, puis lancez la partie.
+            </p>
+          </div>
+        )}
         {/* Seuils */}
         <div>
           <h3 className="text-sm font-bold text-amber-400 uppercase tracking-wider mb-2">
@@ -69,9 +92,15 @@ export default function SettingsScreen({ config, onSave, onBack }: Props) {
         <button
           onClick={() => onSave(localConfig)}
           className="btn-primary w-full py-3 text-lg"
+          data-pregame-start={preGame ? 'true' : undefined}
         >
-          ✅ Sauvegarder
+          {preGame ? '🎮 Commencer la partie' : '✅ Sauvegarder'}
         </button>
+        {preGame && (
+          <button onClick={onBack} className="btn-secondary w-full py-2.5 mt-2">
+            ← Changer de table
+          </button>
+        )}
       </div>
     </div>
   );

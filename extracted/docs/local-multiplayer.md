@@ -42,6 +42,53 @@ dupliquée côté interface.
 - Une fenêtre de CHOP appartient au joueur **dont c'est le tour** : elle est
   proposée après son passage d'appareil, avec les mêmes boutons qu'en solo.
 
+## Paramètres avant de commencer
+
+« Commencer » (solo comme multijoueur local) n'ouvre plus directement la table :
+l'écran **Paramètres de la partie** s'affiche d'abord, avec le récapitulatif de la
+partie choisie (« 5 Joueurs », « 3 joueurs · même appareil »…) et **toutes les
+règles** modifiables (CHOP, malus, cycles, scores, IA…).
+
+- « 🎮 Commencer la partie » applique les règles, les enregistre et distribue.
+- « ← Changer de table » revient à l'écran de préparation **sans perdre** le
+  nombre de joueurs ni les noms déjà saisis (l'état du formulaire est conservé
+  par la page et non plus par le composant).
+- Depuis le menu principal, « Paramètres » garde son comportement d'origine
+  (« ✅ Sauvegarder »), sans lancer de partie.
+
+## Combinaisons verrouillées dans la main
+
+Deux comportements d'interface, sans aucune règle nouvelle côté moteur :
+
+- **Verrou = une vraie combinaison** : un verrou contient toujours **au moins
+  trois cartes** (`MIN_LOCK_SIZE`). Les paires ne sont plus verrouillables, un
+  bloc qui perd une carte (carte jouée) est automatiquement relâché, un ancien
+  verrou de deux cartes enregistré est ignoré et purgé à la sauvegarde, et
+  aucune flèche d'extension n'est proposée pour une paire.
+- **Sélection multiple** : une combinaison verrouillée est un bloc gelé. La
+  sélectionner n'efface plus les autres : plusieurs blocs verrouillés peuvent
+  être sélectionnés ensemble (utile pour poser une ouverture en plusieurs
+  combinaisons). Une combinaison simplement détectée (non verrouillée) garde la
+  sélection exclusive d'origine. Cliquer à nouveau sur un bloc sélectionné ne
+  retire que ce bloc.
+- **Bouton « 🃏 Poser les combinaisons (N) »** : une sélection qui contient
+  plusieurs combinaisons valides (deux blocs verrouillés, ou deux suites
+  adjacentes) n'est plus considérée comme invalide. Le bouton apparaît dans la
+  barre d'actions et pose chaque groupe l'un après l'autre sur le moteur
+  autoritaire. Si le moteur refuse **une** combinaison, rien n'est validé
+  (`placeCombinations` abandonne le lot, aucune pose partielle). Découpage
+  assuré par `planSelectionPlacement()` (`src/game/core/selection-groups.ts`),
+  qui réutilise `detectCombinationType` et respecte les blocs verrouillés.
+- **Petite flèche d'extension** : si une carte de la main est placée juste à
+  côté d'une combinaison verrouillée et qu'elle la complète (tierce plus longue
+  ou carré), une flèche ◀/▶ apparaît au-dessus de la carte. Un clic fusionne la
+  carte avec le bloc : les cartes deviennent un seul bloc verrouillé, et la
+  sélection du bloc est conservée. Fonction pure
+  `lockedSetExtensions()` (`src/game/core/hand-groups.ts`), qui s'appuie sur
+  `detectCombinationType` — la même autorité que les indices automatiques.
+  Aucune flèche pour un Joker, une carte non adjacente, une combinaison déjà
+  pleine (5 cartes) ou un carré complet.
+
 ## Tests
 
 `npx vitest run` (`npm run test:vitest`, inclus dans `npm test` par défaut) :

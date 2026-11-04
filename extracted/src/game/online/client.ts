@@ -1,4 +1,8 @@
 import type { OnlineSnapshot } from "./protocol";
+import { apiUrl, isRemoteApi } from "./api-base";
+
+/** Endpoint of the multiplayer API (relative on the web, absolute in the app). */
+const API_PATH = "/api/multiplayer";
 export class OnlineRequestError extends Error {
   constructor(
     message: string,
@@ -130,9 +134,11 @@ export async function onlineRequest(
   try {
     const token = sessionToken();
     const payload = withBodyToken(body, auth);
-    const response = await fetch("/api/multiplayer", {
+    const response = await fetch(apiUrl(API_PATH), {
       method: payload ? "POST" : "GET",
-      credentials: "same-origin",
+      // Embedded builds are cross-origin: the cookie is only sent when the
+      // server allows it, the body/header token always is.
+      credentials: isRemoteApi() ? "include" : "same-origin",
       cache: "no-store",
       headers: {
         ...authHeaders(auth, token),
@@ -155,7 +161,7 @@ export async function onlineRequest(
         `${reason} (HTTP ${response.status})`,
         response.status,
         payload ? "POST" : "GET",
-        "/api/multiplayer",
+        API_PATH,
         code,
       );
     }

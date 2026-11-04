@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { DEFAULT_CONFIG, GameState, GameCard, Combination } from '../core/types';
-import { createInitialGameState,startNewRound,discard,drawCard,placeCombination } from '../core/engine';
+import { createInitialGameState,startNewRound,discard,drawCard,placeCombination,returnCarreToBase } from '../core/engine';
 import { createDeck } from '../core/deck';
 import { projectPlayerView } from '../core/public-view';
 import { assertDeckIntegrity } from '../core/deck-integrity';
@@ -41,6 +41,27 @@ test('RS event/pile redact the winning card; RJ event exposes only the publicly 
  assert.equal(view.lastDiscard?.card,null);assert.equal(view.discardPile.at(-1),null);assert(!JSON.stringify(view).includes(`"${last.id}"`));}
  else assert.equal(view.lastDiscard?.card?.id,last.id);
  }
+});
+test('A carré returned to the base is public and visible immediately',()=>{
+ const deck=createDeck();
+ const square=deck.filter(c=>!c.isJoker&&c.rank==='9'&&c.pack===1).slice(0,4);
+ const used=new Set(square.map(c=>c.id));
+ let state=startNewRound(createInitialGameState({...DEFAULT_CONFIG,playerCount:4},['S','E','N','W']));
+ state={...state,currentPlayerIndex:0,deck:deck.filter(c=>!used.has(c.id)),
+   tableCombinations:[{id:'base-projection',type:'carre',ownerId:'player-0',cards:square}],
+   players:state.players.map((p,i)=>i===0?{...p,status:'opened' as const}:p),
+   turnState:{...state.turnState!,playerId:'player-0',phase:'playing',hasDrawn:true}};
+ assert.equal(projectPlayerView(state,'player-1').baseCards.length,0,'nothing in the base before the return');
+ const returned=returnCarreToBase(state,'base-projection');
+ for(const viewer of returned.players){
+   const view=projectPlayerView(returned,viewer.id);
+   assert.deepEqual(view.baseCards.map(c=>c.id),square.map(c=>c.id),'the four cards are public at once');
+   assert.equal(view.baseCount,4);
+   assert.equal(view.discardPile.length,0,'the base is not the discard pile');
+ }
+ // Returning a carré never exposes a hidden hand.
+ const view=projectPlayerView(returned,'player-1'),text=JSON.stringify(view);
+ for(const card of returned.players[0].hand)assert(!text.includes(`"${card.id}"`));
 });
 test('Team AI decisions do not change when hidden opponent/partner identities change',()=>{
  const state=scenario();const others=[0,2,3];

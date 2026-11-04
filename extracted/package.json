@@ -4,6 +4,7 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build",
+    "build:mobile": "node scripts/build-mobile.mjs",
     "start": "next start",
     "lint": "eslint .",
     "test:ai-comparison": "tsx src/game/tests/ai-comparison-tests.ts",
