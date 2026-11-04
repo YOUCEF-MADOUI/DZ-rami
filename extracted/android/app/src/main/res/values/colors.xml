@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Couleurs de l'application, alignées sur l'interface React (Tailwind slate/amber). -->
+    <color name="colorPrimary">#0F172A</color>
+    <color name="colorPrimaryDark">#0B1220</color>
+    <color name="colorAccent">#D4A847</color>
+</resources>

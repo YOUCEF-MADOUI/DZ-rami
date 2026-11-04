@@ -40,3 +40,6 @@ next-env.d.ts
 *.keystore
 # Temporary folder used by scripts/build-mobile.mjs
 .mobile-api-parked/
+# Signature Android : la clé et ses mots de passe ne sortent jamais du poste.
+android-assets/keystore.env
+android-assets/.render.py

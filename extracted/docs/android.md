@@ -32,42 +32,56 @@ npm run build:mobile -- --api-base https://dz-rami.example.com
 
 L'export pèse environ **2,7 Mo** (dont 1,7 Mo de cartes PNG).
 
-## Mise en place de l'app (poste de développement, une fois)
+## Le projet Android est déjà généré
 
-Prérequis : **Node 20+**, **JDK 17**, **Android Studio** (SDK + build-tools),
-variables `ANDROID_HOME` / `JAVA_HOME` définies.
+`android/` est un projet Capacitor complet, prêt à être compilé :
 
-```bash
-cd extracted
-npm install @capacitor/core @capacitor/cli @capacitor/android
-npm install @capacitor/app @capacitor/status-bar   # bouton retour + barre d'état
+| Élément | État |
+|---|---|
+| `android/app/src/main/assets/public/` | export web copié (2,7 Mo, cartes incluses) |
+| `AndroidManifest.xml` | `INTERNET` + `ACCESS_NETWORK_STATE` (mode en ligne), activité exportée, splash |
+| `MainActivity.java` | `FLAG_KEEP_SCREEN_ON` (l'écran ne s'éteint pas en pleine manche) |
+| Icônes | adaptative + ronde + toutes densités (mdpi → xxxhdpi) |
+| Splash | 11 variantes (portrait/paysage × densités) aux couleurs du tapis |
+| Thème | barres système `#0F172A`, `forceDarkAllowed=false`, `postSplashScreenTheme` |
+| Signature | pilotée par `DZ_KEYSTORE_FILE` & co. — **aucune clé dans le dépôt** |
 
-npm run build:mobile
-npx cap add android        # crée le projet android/ (à committer ensuite)
-npx cap sync android
-```
-
-Les dossiers générés utiles sont `android/app/src/main/…` (icônes, splash,
-`AndroidManifest.xml`). Les sorties de build sont déjà ignorées par
-`.gitignore` (`android/app/build/`, `.gradle/`, `*.jks`…).
-
-## APK signé (distribution directe)
+### Commandes
 
 ```bash
-# 1. Clé de signature (à conserver hors du dépôt)
-keytool -genkeypair -v -keystore dz-rami-release.jks -alias dz-rami \
-  -keyalg RSA -keysize 2048 -validity 10000
-
-# 2. android/app/build.gradle -> signingConfigs { release { … } }
-#    avec les mêmes informations, puis :
+npm run android:sync      # export statique + copie dans android/ (à refaire après chaque changement web)
+npm run android:icons     # régénère icônes + splashes depuis android-assets/icon-source.png
+npm run android:verify    # 25 contrôles statiques du projet Android (sans SDK)
 
 cd android
-./gradlew assembleRelease     # APK : app/build/outputs/apk/release/
-./gradlew bundleRelease       # AAB si publication Play Store plus tard
+./gradlew assembleDebug     # APK de test : app/build/outputs/apk/debug/
+./gradlew assembleRelease   # APK signé si les variables de signature sont définies
 ```
 
-L'APK produit s'installe directement (autoriser « sources inconnues »). Il faut
-incrémenter `versionCode` / `versionName` à chaque nouvelle version.
+### Signer l'APK
+
+```bash
+# 1) Clé (une seule fois, à sauvegarder hors du dépôt)
+keytool -genkeypair -v -keystore ~/dz-rami-release.jks -alias dz-rami \
+  -keyalg RSA -keysize 2048 -validity 10000
+
+# 2) Variables (modèle : android-assets/keystore.example.env)
+cp android-assets/keystore.example.env android-assets/keystore.env   # puis éditer
+set -a; . ./android-assets/keystore.env; set +a
+
+# 3) APK signé
+cd android && ./gradlew assembleRelease
+# sortie : app/build/outputs/apk/release/app-release.apk
+```
+
+Sans ces variables, `assembleRelease` produit un APK **non signé** : utile pour
+tester, impossible à distribuer. `versionCode` / `versionName` sont dans
+`android/app/build.gradle` (à incrémenter à chaque version publique).
+
+### Prérequis du poste de compilation
+
+**JDK 17** + **Android SDK 35** (via Android Studio), variables `JAVA_HOME` et
+`ANDROID_HOME` définies, puis `npx cap sync android` une dernière fois.
 
 ## Codes d'identité et ressources
 
@@ -95,12 +109,13 @@ incrémenter `versionCode` / `versionName` à chaque nouvelle version.
 5. **Lisibilité WebView** : `-webkit-text-size-adjust: 100%`, fond `#0f172a` pour
    éviter le flash blanc au démarrage.
 
-## Réglages mobiles encore à faire (poste avec SDK Android)
+## Réglages mobiles faits côté natif
 
-- Verrouillage de l'orientation dans `AndroidManifest.xml` si un seul sens est
-  retenu (le jeu est prévu pour le paysage, le portrait fonctionne aussi).
-- Écran maintenu allumé pendant une partie (`FLAG_KEEP_SCREEN_ON`).
-- Désactiver la sélection de texte au long appui sur les cartes.
+- Orientation : `fullSensor` (portrait et paysage fonctionnent ; forcer
+  `landscape` dans `AndroidManifest.xml` si un seul sens est retenu).
+- Écran maintenu allumé : `FLAG_KEEP_SCREEN_ON` dans `MainActivity.java`.
+- Sélection de texte au long appui : à neutraliser en CSS si gênante
+  (`user-select: none` sur `.card`).
 
 ## Multijoueur en ligne depuis l'app
 
@@ -121,9 +136,9 @@ signale simplement que le serveur n'est pas configuré.
 | Étape | Contenu | État |
 |---|---|---|
 | **0. Préparation** | base d'API configurable, export statique, script de build, config Capacitor | ✅ fait |
-| **1. Coquille Android** | `cap add android`, test sur appareil, bouton retour, safe areas, `100dvh` | à faire sur un poste avec SDK |
-| **2. Finition** | icônes, splash, écran maintenu allumé, orientation | à faire |
-| **3. APK signé** | keystore, `assembleRelease`, diffusion | à faire |
+| **1. Coquille Android** | `cap add android`, bouton retour, safe areas, `100dvh` | ✅ fait |
+| **2. Finition** | icônes, splash, écran maintenu allumé, orientation, thème | ✅ fait |
+| **3. APK signé** | config de signature prête ; `gradlew assembleRelease` sur un poste avec JDK 17 + SDK 35 | reste la compilation |
 | **4. En ligne (option)** | serveur HTTPS + `--api-base`, CORS | plus tard |
 
 ## Vérifications
@@ -134,7 +149,11 @@ npm run lint
 npm test                   # moteur, UI, en ligne
 npm run build              # build web inchangé
 npm run build:mobile       # export Android (out/)
+npm run android:sync       # export + copie dans android/
+npm run android:verify     # 25 contrôles du projet Android (sans SDK)
 ```
 
 Les tests `api-base.test.ts` garantissent que le web reste en URL relative et
-que l'app utilise bien l'URL absolue configurée.
+que l'app utilise bien l'URL absolue configurée ; `android-back.test.ts` couvre
+le bouton retour (no-op hors Capacitor, sortie de l'app seulement depuis
+l'accueil).
