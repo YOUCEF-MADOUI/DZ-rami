@@ -41,8 +41,8 @@ L'export pèse environ **2,7 Mo** (dont 1,7 Mo de cartes PNG).
 | `android/app/src/main/assets/public/` | export web copié (2,7 Mo, cartes incluses) |
 | `AndroidManifest.xml` | `INTERNET` + `ACCESS_NETWORK_STATE` (mode en ligne), activité exportée, splash |
 | `MainActivity.java` | `FLAG_KEEP_SCREEN_ON` (l'écran ne s'éteint pas en pleine manche) |
-| Icônes | adaptative + ronde + toutes densités (mdpi → xxxhdpi) |
-| Splash | 11 variantes (portrait/paysage × densités) aux couleurs du tapis |
+| Icônes | adaptative + ronde + toutes densités (mdpi → xxxhdpi), sujet composé sur le vert du tapis |
+| Splash | 11 variantes (portrait/paysage × densités), fond `#1A5C2E`, carte centrée |
 | Thème | barres système `#0F172A`, `forceDarkAllowed=false`, `postSplashScreenTheme` |
 | Signature | pilotée par `DZ_KEYSTORE_FILE` & co. — **aucune clé dans le dépôt** |
 
@@ -51,6 +51,8 @@ L'export pèse environ **2,7 Mo** (dont 1,7 Mo de cartes PNG).
 ```bash
 npm run android:sync      # export statique + copie dans android/ (à refaire après chaque changement web)
 npm run android:icons     # régénère icônes + splashes depuis android-assets/icon-source.png
+                          # (nécessite Pillow : python3 -m venv .imgtool && .imgtool/bin/pip install pillow,
+                          #  puis IMGTOOL_PYTHON=.imgtool/bin/python npm run android:icons)
 npm run android:verify    # 25 contrôles statiques du projet Android (sans SDK)
 
 cd android

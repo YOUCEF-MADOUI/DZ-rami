@@ -60,20 +60,46 @@ legacy = json.loads(sys.argv[3])
 adaptive = json.loads(sys.argv[4])
 splash = json.loads(sys.argv[5])
 BACKGROUND = (26, 92, 46, 255)   # #1a5c2e, le tapis vert du jeu
-icon = Image.open(src).convert("RGBA").resize((1024, 1024), Image.LANCZOS)
+source_image = Image.open(src).convert("RGBA")
 
 def ensure(path):
     os.makedirs(os.path.dirname(path), exist_ok=True)
+
+
+# La source est une icône carrée au fond dégradé : on garde un carré central,
+# coins arrondis, puis on efface le fond en composant sur le vert du tapis.
+# Résultat : plus de carré plus sombre ni d'artefacts blancs dans les coins.
+def rounded_square(image, ratio=0.30):
+    size = min(image.size)
+    inset = int((size - size) / 2)
+    square = image.crop((inset, inset, inset + size, inset + size))
+    radius = int(size * ratio)
+    mask = Image.new("L", (size, size), 0)
+    ImageDraw.Draw(mask).rounded_rectangle((0, 0, size - 1, size - 1), radius=radius, fill=255)
+    square.putalpha(mask)
+    return square
+
+subject = rounded_square(source_image).resize((1024, 1024), Image.LANCZOS)
+
+
+def composed(size):
+    """Sujet centré sur le vert du tapis, à la taille demandée."""
+    canvas = Image.new("RGBA", (size, size), BACKGROUND)
+    canvas.alpha_composite(subject.resize((size, size), Image.LANCZOS))
+    return canvas
+
+
+icon = composed(1024)
 
 # Icône classique (avant Android 8) : l'image entière, coins arrondis gérés par le système.
 for density, size in legacy.items():
     out = os.path.join(res, f"mipmap-{density}", "ic_launcher.png")
     ensure(out)
-    icon.resize((size, size), Image.LANCZOS).save(out)
+    composed(size).save(out)
     out_round = os.path.join(res, f"mipmap-{density}", "ic_launcher_round.png")
     mask = Image.new("L", (size, size), 0)
     ImageDraw.Draw(mask).ellipse((0, 0, size - 1, size - 1), fill=255)
-    rounded = icon.resize((size, size), Image.LANCZOS)
+    rounded = composed(size)
     rounded.putalpha(mask)
     rounded.save(out_round)
 
@@ -82,7 +108,7 @@ for density, size in legacy.items():
 for density, size in adaptive.items():
     foreground = Image.new("RGBA", (size, size), (0, 0, 0, 0))
     inner = int(size * 72 / 108 * 0.86)
-    art = icon.resize((inner, inner), Image.LANCZOS)
+    art = subject.resize((inner, inner), Image.LANCZOS)
     offset = (size - inner) // 2
     foreground.alpha_composite(art, (offset, offset))
     out = os.path.join(res, f"mipmap-{density}", "ic_launcher_foreground.png")
@@ -93,7 +119,7 @@ for density, size in adaptive.items():
 for folder, (width, height) in splash.items():
     canvas = Image.new("RGBA", (width, height), BACKGROUND)
     logo = int(min(width, height) * 0.28)
-    art = icon.resize((logo, logo), Image.LANCZOS)
+    art = subject.resize((logo, logo), Image.LANCZOS)
     canvas.alpha_composite(art, ((width - logo) // 2, (height - logo) // 2))
     out = os.path.join(res, folder, "splash.png")
     ensure(out)
